@@ -1,0 +1,51 @@
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  约定总纲（PDF 工具箱 · v0.7.4）
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+【一、目录与职责】
+core/ = 共用底层（splitter 拆页 / rebuilder 重建 / order 页序 /
+        inserter 旧版插字（已闲置，重建走 rebuilder 自己的插字）/ common 共用）
+modes/ = 模式（自动发现；一模式 = 一 mode_*.py，提供 run(params, log_print)）
+gui.py = 外壳；slot_scanner.py = 空位扫描；order_editor.py = 换页口令；
+page_drag.py = 拖拽排序；merger.py = 并入；sticker.py = 贴图；
+check_tables.py = 体检；run_task.py = CLI 流程；launcher.py = 打包入口
+输出三分：最终文件 / 工作文件 / 日志。
+
+【二、核心文件（都在 工作文件/ 下）】
+manifest.json  页信息（宽高/旋转/DPI/状态）；总页数以它为准
+order.csv      页序（new_no,old_no,replace_from）
+text.csv       插字（no,text,x,y,size,color,align,status）
+slots.json     空位 [{编码P页R行C列, 矩形, 字号}]；格子口令靠它
+origin.csv     拆页时的原始页序快照，永不改动，【恢复】口令的依据
+sticker.csv    贴图（页号,图片路径,x,y,w，比例坐标）
+missing.csv    缺失/失败记录
+
+【三、坐标单位】统一 PDF 点（pt），原点=页面左上角；
+像素↔点换算只看 manifest 的宽高。
+
+【四、CSV 铁律】
+1. 一律 UTF-8-SIG，写入 newline=""（坑：编码烧毁过两份文档）
+2. 已存在的表绝不覆盖（split_pdf 只在缺表时生成）
+3. text.csv 允许同页多行（格子填字靠它）；no 列照抄表内补零格式
+4. order.csv：new_no 必须从 1 连续、不重复；old_no 除 0（空白）外不重复
+
+【五、slot_scanner 两入口，界限分明】
+scan_pdf        文字/矢量找表，拆页默认走，禁止自动回退图片扫描
+scan_pdf_image  图片找线，只由 GUI"扫图片格子"按钮触发，
+                只往没空位的页里填。性能红线：像素处理必须 numpy
+                向量化；纯 Python 逐像素（~10秒/页）只许做兜底
+
+【六、批量填字自动落位】
+没坐标的文字自动落页面左下角（x=50, y=页高-36），日志提示，
+点图定位置微调。照片件主路径。
+
+【七、异常分级】单页失败 → 记缺失不停机；输出目录不可写 /
+输入损坏 / 依赖缺失 → FatalError 立即停止。原文件永远只读。
+
+【八、指令队列】口令/填字/倒序都能攒；执行时成功一条删一条，
+失败即停，重跑只跑剩余的；全部完成+体检通过才出成品。
+
+【九、版本与文档同步】改约定先加进 docs/待办与坑.txt；
+版本号 gui.py 的 VERSION 与 config.json 的 version 保持一致。
+
+【十、MVP 边界】不做 OCR、不做 Word。打包 = launcher.py + build.bat
+（--onedir）；入口文件必须单独测；bat 要查 errorlevel。

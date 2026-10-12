@@ -1,0 +1,19 @@
+pdf_tool/
+  main.py
+  cli.py
+  gui.py
+  config.json
+  requirements.txt
+  启动.bat
+  core/
+    __init__.py
+    common.py
+    splitter.py
+    rebuilder.py
+    inserter.py
+  modes/
+    __init__.py
+    mode_rebuild.py
+  docs/
+    约定总纲.txt
+    待办与坑.txt

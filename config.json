@@ -1,0 +1,9 @@
+{
+  "version": "0.7.4",
+  "manifest_schema_version": 1,
+  "render_dpi": 200,
+  "font_path": "",
+  "font_fallback": "china-s",
+  "output_policy": "source_dir",
+  "conflict_policy": "auto_rename"
+}

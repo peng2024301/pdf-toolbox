@@ -1,0 +1,4929 @@
+━━━━ 阅读须知（发给 AI 分析时整段带上）━━━━
+1. 本打包内的 .py：行首 tab 已展开为 4 空格，行尾已统一为 \n；
+   原生使用空格缩进的文件保持原样。每份文件的'缩进='标注
+   记录的是规范化之前的原始形态（tab / 4空格 / 混合⚠ 等）。
+2. 每份 .py 都通过了 compile() 检查，文件头标 '语法✔'。
+   这只证明不存在 IndentationError 级别的破碎，
+   不证明'某段缩进在语义上贴对了位置'——
+   语法合法但缩进贴错的代码（例如本该在循环体内的 if
+   被贴到了循环体外）compile() 照样通过。
+   凡涉及缩进语义的判断（'这段在不在某块肚子里'），
+   必须先向使用者确认原始 .py，不得仅凭本打包下结论。
+3. '缩进=不规则空格⚠' 是告警不是结论，常见来源是续行对齐：
+   函数调用/列表/字典跨行时，续行对齐到括号内某个位置，
+   宽度天然不是 4 的倍数（如 9、12、17），合法且常见；
+   也可能是真的缩进错乱。看这个 ⚠ 时结合第 2 条：
+   若同时标 '语法✔'，多半是续行对齐，不必惊慌；
+   真正错乱的缩进会导致 IndentationError，已被 compile()
+   拦下并标 '⚠语法错'。要确认真假，须看原始 .py。
+4. 若某 .py 的文件头标 '⚠文件有非法字符' 或 '⚠语法错'，
+   该文件本身可能已被破坏，请勿基于它下任何结论。
+5. 设计语义（某功能'该不该这样'）拿不准时，
+   先问使用者该功能是否存在、是否有意为之，勿直接判为 bug。
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+
+============================================================
+【文件】check_tables.py  (6999 字节, 153 行, 编码=utf-8, 缩进=4空格, 语法✔)
+来源: D:\压缩\开发中\check_tables.py
+============================================================
+# -*- coding: utf-8 -*-
+"""表格体检：双击运行，按总纲规则检查 text.csv 和 order.csv，有问题说人话。
+v0.2：总页数以 manifest.json 为准（不再拿 text.csv 行数推）；
+      text.csv 允许同页多行（格子填字一页多格），no 只校验范围。
+v0.3：manifest 读取提前到函数开头，与 text.csv 是否存在解耦；
+      修掉"text.csv 缺失/为空时误报'没有 manifest.json'"的文案谎言。
+"""
+import csv
+import json
+import sys
+from pathlib import Path
+
+def read_rows(path):
+    with open(path, encoding="utf-8-sig") as f:
+        return list(csv.reader(f))
+
+def _page_total(work_dir):
+    """总页数以 manifest.json 为准，不再用 text.csv 行数推。"""
+    try:
+        data = json.load(open(work_dir / "manifest.json", encoding="utf-8"))
+        pages = data.get("pages", data)
+        return len(pages)
+    except Exception:
+        return None
+
+def check(work_dir, errors, warns):
+    # 总页数提前读，与 text.csv 是否存在无关
+    total = _page_total(work_dir)
+    if total is None:
+        errors.append("找不到/读不了 manifest.json，页数校验跳过——先重新跑第一步拆页")
+
+    # ---- 检查 text.csv ----
+    tpath = work_dir / "text.csv"
+    if not tpath.exists():
+        errors.append(f"找不到 {tpath}，先跑第一步拆页")
+    else:
+        rows = read_rows(tpath)
+        if not rows:
+            errors.append("text.csv 是空的，重新跑第一步拆页")
+        else:
+            header, body = rows[0], rows[1:]
+            if len(header) != 8:
+                errors.append(f"text.csv 表头应是 8 格，现在 {len(header)} 格：{header}")
+            for i, r in enumerate(body, start=2):
+                if len(r) != 8:
+                    errors.append(f"text.csv 第 {i} 行格子数是 {len(r)}，应是 8 格（英文逗号分隔）")
+                    continue
+                no = r[0].strip()
+                if not no:
+                    errors.append(f"text.csv 第 {i} 行 no 列是空的")
+                    continue
+                if not no.isdigit():
+                    errors.append(f"text.csv 第 {i} 行 no 不是数字：{no}")
+                    continue
+                if total and not 1 <= int(no) <= total:
+                    errors.append(f"text.csv 第 {i} 行 no={no} 超出页数范围（共 {total} 页）")
+            warns.append(f"text.csv 共 {len(body)} 行（同页可多行），"
+                         f"填了字的 {sum(1 for r in body if len(r)>1 and r[1].strip())} 行")
+
+    # ---- 检查 order.csv ----
+    opath = work_dir / "order.csv"
+    if not opath.exists():
+        errors.append(f"找不到 {opath}，先跑第一步拆页")
+    else:
+        rows = read_rows(opath)
+        if not rows:
+            errors.append("order.csv 是空的，重新跑第一步拆页")
+        else:
+            header, body = rows[0], rows[1:]
+            if header[:3] != ["new_no", "old_no", "replace_from"]:
+                errors.append(f"order.csv 表头应是 new_no,old_no,replace_from，现在是：{header}")
+            news, olds = [], []
+            for i, r in enumerate(body, start=2):
+                try:
+                    new_no = int((r[0] if len(r) > 0 else "").strip())
+                    old_no = int((r[1] if len(r) > 1 else "").strip())
+                except ValueError:
+                    errors.append(f"order.csv 第 {i} 行页码不是数字：{r[:2]}")
+                    continue
+                news.append(new_no)
+                olds.append(old_no)
+                if len(r) > 2 and r[2].strip():
+                    try:
+                        rf = int(r[2].strip())
+                        if total and not 1 <= rf <= total:
+                            errors.append(f"order.csv 第 {i} 行 replace_from={rf} 超出范围（共 {total} 页）")
+                    except ValueError:
+                        errors.append(f"order.csv 第 {i} 行 replace_from 不是数字：{r[2]}")
+            dup = {n for n in news if news.count(n) > 1}
+            if dup:
+                errors.append(f"order.csv 的 new_no 有重复：{sorted(dup)}——不许加行删行")
+            m_rows = len(body)
+            if total:
+                miss = [n for n in range(1, m_rows + 1) if n not in news]
+                if miss:
+                    errors.append(f"order.csv 缺了这些 new_no：{miss}——位置号必须从1连续")
+                if m_rows > total:
+                    errors.append(f"order.csv 有 {m_rows} 行，比总页数 {total} 还多——删页用口令，别手工加行")
+            blanks = 0
+            for i, n in enumerate(olds, start=2):
+                if n == 0:
+                    blanks += 1
+                    continue
+                if total and not 1 <= n <= total:
+                    errors.append(f"order.csv 第 {i} 行 old_no={n} 超出范围（共 {total} 页）")
+            d2 = {n for n in olds if n != 0 and olds.count(n) > 1}
+            if d2:
+                errors.append(f"order.csv 的 old_no 有重复：{sorted(d2)}——每页内容只能被用一个位置（0=空白页不算）")
+            if blanks:
+                warns.append(f"order.csv 有 {blanks} 张空白页")
+
+            moved = sum(1 for r in body if len(r) > 1 and r[0].strip() != r[1].strip())
+            warns.append(f"order.csv 换了 {moved} 页位置，强行换图 {sum(1 for r in body if len(r)>2 and r[2].strip())} 页")
+
+def main():
+    root = Path(__file__).resolve().parent
+    errors, warns = [], []
+
+    # 找所有工作文件目录（输出目录结构里带"工作文件"的都查一遍）
+    work_dirs = [p.parent for p in root.rglob("工作文件") if p.is_dir()]
+    if not work_dirs:
+        print("没找到任何 工作文件/ 目录——先跑第一步拆页。")
+        input("按回车关闭……")
+        return
+
+    for wd in work_dirs:
+        print(f"\n===== 检查：{wd} =====")
+        e2, w2 = [], []
+        check(wd, e2, w2)
+        for w in w2:
+            print(f"  [提示] {w}")
+        for e in e2:
+            print(f"  [致命] {e}")
+        if not e2 and not w2:
+            print("  （空目录，跳过）")
+        elif not e2:
+            print("  ✔ 这张表没问题，可以点一键运行了")
+        errors += e2
+
+    print("\n" + "=" * 40)
+    if errors:
+        print(f"共 {len(errors)} 个问题，改完表再跑程序。")
+        print("改表要点：英文逗号分格、不加行不删行、old_no 每页恰好用一次。")
+    else:
+        print("全部通过 ✔ → 回程序点一键运行即可。")
+    input("按回车关闭……")
+
+if __name__ == "__main__":
+    try:
+        main()
+    except Exception as e:
+        print(f"[致命] 体检脚本自己出错了：{e}")
+        input("按回车关闭……")
+============================================================
+【文件】config.json  (203 字节, 9 行, 编码=utf-8, 缩进=空格)
+来源: D:\压缩\开发中\config.json
+============================================================
+{
+  "version": "0.7.4",
+  "manifest_schema_version": 1,
+  "render_dpi": 200,
+  "font_path": "",
+  "font_fallback": "china-s",
+  "output_policy": "source_dir",
+  "conflict_policy": "auto_rename"
+}
+============================================================
+【文件】core\__init__.py  (0 字节, 1 行, 编码=utf-8, 缩进=无缩进, 语法✔)
+来源: D:\压缩\开发中\core\__init__.py
+============================================================
+
+============================================================
+【文件】core\common.py  (2858 字节, 86 行, 编码=utf-8, 缩进=4空格, 语法✔)
+来源: D:\压缩\开发中\core\common.py
+============================================================
+# -*- coding: utf-8 -*-
+"""共用底层：配置加载、输出目录、日志、异常分级。"""
+import json
+import hashlib
+import shutil
+from pathlib import Path
+from datetime import datetime
+
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+
+class FatalError(Exception):
+    """致命错误：输出目录不可写、输入损坏、依赖缺失——立即停止。"""
+    pass
+
+def load_config():
+    with open(PROJECT_ROOT / "config.json", encoding="utf-8") as f:
+        return json.load(f)
+
+def file_hash(path):
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(1 << 20), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+def now_str():
+    return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+def ensure_output_dir(user_dir=None, source_file=None, task_name="任务"):
+    """输出目录三分：最终文件 / 工作文件 / 日志。返回三个 Path。"""
+    if user_dir:
+        root = Path(user_dir)
+    else:
+        cfg = load_config()
+        if cfg["output_policy"] == "source_dir" and source_file:
+            date = datetime.now().strftime("%Y%m%d")
+            root = Path(source_file).parent / f"输出_{date}" / task_name
+        else:
+            root = PROJECT_ROOT / "输出" / task_name
+
+    # 按源 PDF 隔离：每个输入文件有独立的工作/最终/日志目录，杜绝混用
+    if source_file:
+        root = root / Path(source_file).stem
+
+    try:
+        root.mkdir(parents=True, exist_ok=True)
+        test = root / ".write_test"
+        test.touch(); test.unlink()
+    except OSError as e:
+        raise FatalError(f"输出目录不可写: {root} ({e})")
+
+    final_dir = root / "最终文件"
+    work_dir  = root / "工作文件"
+    log_dir   = root / "日志"
+    for d in (final_dir, work_dir, log_dir):
+        d.mkdir(exist_ok=True)
+    return final_dir, work_dir, log_dir
+
+def unique_path(path):
+    """冲突策略：自动加序号，永不覆盖。"""
+    path = Path(path)
+    if not path.exists():
+        return path
+    i = 1
+    while True:
+        cand = path.with_name(f"{path.stem}_{i}{path.suffix}")
+        if not cand.exists():
+            return cand
+        i += 1
+
+class Logger:
+    """每步一行、带时间戳。日志是记事本环境下唯一的调试手段。"""
+    def __init__(self, log_dir, name="run"):
+        self.path = log_dir / f"{name}.log"
+        self._write("=== 运行开始 ===")
+
+    def _write(self, msg):
+        line = f"[{now_str()}] {msg}"
+        print(line)
+        with open(self.path, "a", encoding="utf-8") as f:
+            f.write(line + "\n")
+
+    def info(self, msg):  self._write(msg)
+    def warn(self, msg):  self._write(f"[警告] {msg}")
+    def error(self, msg): self._write(f"[错误] {msg}")
+
+============================================================
+【文件】core\inserter.py  (2771 字节, 73 行, 编码=utf-8, 缩进=4空格, 语法✔)
+来源: D:\压缩\开发中\core\inserter.py
+============================================================
+# -*- coding: utf-8 -*-
+"""按编号插入文字。只填 no,text 时用默认规则；高级用户可填坐标和样式。"""
+import csv
+import fitz
+from pathlib import Path
+from .common import load_config
+
+def load_text_csv(work_dir):
+    rows = []
+    path = work_dir / "text.csv"
+    with open(path, encoding="utf-8-sig", newline="") as f:
+        for row in csv.DictReader(f):
+            rows.append(row)
+    nos = [r["no"] for r in rows]
+    if len(nos) != len(set(nos)):
+        raise ValueError("text.csv 中 no 列有重复，请修正后再运行")
+    return rows
+
+def get_font():
+    """优先 config 指定字体文件，否则用内置中文字体。"""
+    cfg = load_config()
+    fp = cfg.get("font_path", "")
+    if fp:
+        from pathlib import Path as P
+        if P(fp).exists():
+            return "custom", fp
+    return "builtin", cfg.get("font_fallback", "china-s")
+
+def insert_text(input_pdf, output_pdf, work_dir, logger):
+    rows = load_text_csv(work_dir)
+    font_kind, font_val = get_font()
+    doc = fitz.open(input_pdf)
+    inserted, missing = 0, []
+
+    for r in rows:
+        text = (r.get("text") or "").strip()
+        if not text:
+            if r.get("status") in ("待审核", "缺失"):
+                missing.append({"no": r["no"], "reason": "缺文字",
+                                "note": "text 为空"})
+            continue
+        try:
+            page = doc[int(r["no"]) - 1]  # 编号即页序
+            x = float(r["x"]) if r.get("x") else 72
+            y = float(r["y"]) if r.get("y") else 72
+            size = float(r["size"]) if r.get("size") else 12
+            if font_kind == "custom":
+                page.insert_font(fontname="userfont", fontfile=font_val)
+                fname = "userfont"
+            else:
+                fname = font_val
+            page.insert_text((x, y), text, fontname=fname, fontsize=size)
+            r["status"] = "已确认"
+            inserted += 1
+            logger.info(f"页 {r['no']} 插字: {text[:20]}")
+        except Exception as e:
+            missing.append({"no": r["no"], "reason": "坐标无效或页面损坏",
+                            "note": str(e)})
+            logger.warn(f"页 {r['no']} 插字失败: {e}")
+
+    doc.save(str(output_pdf), deflate=True)
+    doc.close()
+
+    if missing:
+        with open(work_dir / "missing.csv", "w", encoding="utf-8-sig",
+                  newline="") as f:
+            w = csv.DictWriter(f, fieldnames=["no", "reason", "note"])
+            w.writeheader()
+            w.writerows(missing)
+        logger.warn(f"有 {len(missing)} 条缺失，见 missing.csv")
+    logger.info(f"插字完成，共插入 {inserted} 条")
+    return missing
+
+============================================================
+【文件】core\order.py  (2513 字节, 50 行, 编码=utf-8, 缩进=4空格, 语法✔)
+来源: D:\压缩\开发中\core\order.py
+============================================================
+# -*- coding: utf-8 -*-
+"""order.csv：自由重排 + 替换。内容跟随来源页，位置跟随 new_no。"""
+import csv
+from .common import FatalError
+
+def _read_dicts(path):
+    with open(path, encoding="utf-8-sig") as f:
+        return list(csv.DictReader(f))
+
+def load_order(work_dir, total, logger):
+    """返回 {新页码: 内容页码}。无表 = 原序 1:1。"""
+    path = work_dir / "order.csv"
+    if not path.exists():
+        logger.info("未找到 order.csv，按原页序重建")
+        return {i: i for i in range(1, total + 1)}
+
+    mapping = {}
+    old_nos = []
+    for r in _read_dicts(path):
+        try:
+            new_no = int((r.get("new_no") or "").strip())
+            old_no = int((r.get("old_no") or "").strip())
+        except ValueError:
+            raise FatalError(f"order.csv 中页码不是数字: {dict(r)}")
+        if old_no != 0:
+            old_nos.append(old_no)
+        rf = (r.get("replace_from") or "").strip()
+        content = int(rf) if rf else old_no
+        # 位置号必须在 1..total；内容号 0 = 空白页，合法
+        if not 1 <= new_no <= total:
+            raise FatalError(f"order.csv 里 new_no={new_no} 超出范围（共 {total} 页）")
+        if rf and not 1 <= int(rf) <= total:
+            raise FatalError(f"order.csv 里 replace_from={rf} 超出范围（共 {total} 页）")
+        if content != 0 and not 1 <= content <= total:
+            raise FatalError(f"order.csv 里 old_no={old_no} 超出范围（共 {total} 页）")
+        if new_no in mapping:
+            raise FatalError(f"order.csv 中 new_no={new_no} 重复，每行只许出现一次")
+        mapping[new_no] = content
+    # 位置号必须从 1 开始连续（删页后行数变少也必须是 1..M）
+    if sorted(mapping) != list(range(1, len(mapping) + 1)):
+        raise FatalError("order.csv 的 new_no 必须从 1 开始连续编号（不许跳号、不许重复）")
+    # old_no 除 0（空白）外不许重复；replace_from 产生的
+    # 同内容多引用（复制）是允许的，不在此列
+    if len(old_nos) != len(set(old_nos)):
+        raise FatalError("order.csv 的 old_no 有重复（除空白页外，每页内容只能用一个位置）")
+    for new_no, content in mapping.items():
+        if content != new_no:
+            logger.info(f"页位 {new_no} ← 内容来自原第 {content} 页" if content
+                        else f"页位 {new_no} ← 空白页")
+    return mapping
+============================================================
+【文件】core\rebuilder.py  (5032 字节, 127 行, 编码=utf-8, 缩进=4空格, 语法✔)
+来源: D:\压缩\开发中\core\rebuilder.py
+============================================================
+# -*- coding: utf-8 -*-
+"""按 order.csv 重排/替换页面，并按 text.csv 插字、sticker.csv 贴图，一步重建 PDF。"""
+import fitz
+import csv
+import json
+from pathlib import Path
+from .common import FatalError
+from .order import load_order
+
+COLORS = {"black": (0, 0, 0), "red": (1, 0, 0), "blue": (0, 0, 1),
+          "green": (0, 0.5, 0), "gray": (0.5, 0.5, 0.5)}
+
+def _parse_color(s):
+    """认名字也认 hex（#ff0000 / #f00），认不出回退黑色。"""
+    s = (s or "").strip().lower()
+    if s in COLORS:
+        return COLORS[s]
+    if s.startswith("#"):
+        h = s.lstrip("#")
+        if len(h) == 3:
+            h = "".join(c * 2 for c in h)
+        if len(h) == 6:
+            return tuple(int(h[i:i + 2], 16) / 255 for i in (0, 2, 4))
+    return (0, 0, 0)
+
+def _read_dicts(path):
+    with open(path, encoding="utf-8-sig") as f:
+        return list(csv.DictReader(f))
+
+def _insert_text(page, row, logger):
+    text = (row.get("text") or "").strip()
+    if not text:
+        return
+    def num(key, default):
+        v = (row.get(key) or "").strip()
+        return float(v) if v else default
+    size = num("size", 14)
+    x, y = num("x", 50), num("y", 50)
+    color = _parse_color(row.get("color"))
+    align = (row.get("align") or "").strip()
+    if align in ("中", "居中", "center", "右", "右对齐", "right"):
+        try:
+            w = fitz.get_text_length(text, fontname="china-s", fontsize=size)
+        except Exception:
+            w = len(text) * size
+        if align.startswith(("中", "居中", "c")):
+            x = page.rect.width / 2 - w / 2
+        else:
+            x = page.rect.width - x - w
+    page.insert_text((x, y), text, fontname="china-s", fontsize=size, color=color)
+
+def _load_stickers(work_dir):
+    """读 sticker.csv，返回 [(页号字符串, 行), ...]；没有文件返回空表。"""
+    p = work_dir / "sticker.csv"
+    if not p.exists():
+        return []
+    try:
+        with open(p, encoding="utf-8-sig", newline="") as f:
+            rows = list(csv.reader(f))
+        return [r for r in rows[1:] if r and r[0].strip()]
+    except Exception:
+        return []
+
+def _paste_stickers(page, stk_rows, page_no, logger):
+    """把属于页号 page_no 的贴图盖到该页上（文字之后调用）。"""
+    mine = [r for r in stk_rows if r[0].lstrip("0") == str(page_no).lstrip("0")]
+    if not mine:
+        return
+    try:
+        try:
+            from . import sticker
+        except ImportError:
+            import sticker
+        sticker.paste_on_page(page, mine)
+        logger.info(f"页 {page_no}: 已贴 {len(mine)} 张图")
+    except Exception as e:
+        logger.warn(f"页 {page_no}: 贴图失败，已跳过（{e}）")
+
+def rebuild(work_dir, output_pdf, logger):
+    with open(work_dir / "manifest.json", encoding="utf-8") as f:
+        manifest = json.load(f)
+    pages = {p["page"]: p for p in manifest["pages"]}
+    total = len(manifest["pages"])
+
+    mapping = load_order(work_dir, total, logger)   # 新页码 -> 内容页码
+
+    texts = {}
+    tpath = work_dir / "text.csv"
+    if tpath.exists():
+        for r in _read_dicts(tpath):
+            no = (r.get("no") or "").strip()
+            if no:
+                texts.setdefault(no, []).append(r)   # 同页多行都保留
+
+    stk_rows = _load_stickers(work_dir)              # 贴图一次读入，循环里查
+
+    # 空白页尺寸：跟随原 PDF（用第一张正常页的尺寸当参照）
+    ref = next((p for p in manifest["pages"] if p.get("status") == "已确认"), None)
+    blank_w = ref["width_pt"] if ref else 595
+    blank_h = ref["height_pt"] if ref else 842
+
+    doc = fitz.open()
+
+    for new_no in sorted(mapping):
+        if mapping[new_no] == 0:                          # 空白页
+            doc.new_page(width=blank_w, height=blank_h)
+            logger.info(f"新页 {new_no}: 空白页")
+            continue
+        src = pages[mapping[new_no]]
+
+        if src.get("status") == "缺失":
+            page = doc.new_page(width=blank_w, height=blank_h)
+            page.insert_text((72, 100), f"[占位页 {new_no}]",
+                             fontname="china-s", fontsize=14)
+            logger.warn(f"新页 {new_no}（原页 {src['page']}）缺失，用占位页代替")
+            continue
+        page = doc.new_page(width=src["width_pt"], height=src["height_pt"])
+        page.insert_image(page.rect, filename=str(work_dir / src["image"]))
+        # 字跟随内容页：用内容页的 no 去 text.csv 里找（同页可有多行，逐行插入）
+        for row in texts.get(src["no"], []):
+            _insert_text(page, row, logger)
+        # 贴图：必须盖在文字之后，否则图会压住字
+        _paste_stickers(page, stk_rows, src["no"], logger)
+    doc.save(str(output_pdf), deflate=True)
+    doc.close()
+    logger.info(f"重建完成（含重排/替换/插字/贴图）: {output_pdf}")
+
+============================================================
+【文件】core\splitter.py  (3817 字节, 86 行, 编码=utf-8, 缩进=4空格, 语法✔)
+来源: D:\压缩\开发中\core\splitter.py
+============================================================
+# -*- coding: utf-8 -*-
+"""拆页编号：输入只读，渲染成单页 PNG，生成 manifest.json、text.csv、order.csv。"""
+import fitz  # PyMuPDF
+import csv
+import json
+from pathlib import Path
+from .common import file_hash, load_config, now_str, FatalError
+
+def split_pdf(input_path, work_dir, logger):
+
+    cfg = load_config()
+    dpi = cfg["render_dpi"]
+    zoom = dpi / 72.0  # PDF 点 -> 像素
+    doc = fitz.open(input_path)  # 只读打开，从不写回
+
+    pages = []
+    for i, page in enumerate(doc):
+        no = f"{i+1:03d}"  # 编号靠页序，不靠 AI 猜
+        img_name = f"{no}.png"
+        try:
+            pix = page.get_pixmap(matrix=fitz.Matrix(zoom, zoom))
+            pix.save(work_dir / img_name)
+            pages.append({
+                "no": no,
+                "source": str(input_path),
+                "page": i + 1,
+                "type": "页面图像",
+                "width_pt": round(page.rect.width, 2),   # 坐标统一用 PDF 点
+                "height_pt": round(page.rect.height, 2),
+                "rotation": page.rotation,
+                "dpi": dpi,
+                "image": img_name,
+                "status": "已确认",
+            })
+            logger.info(f"页 {no} 拆出: {pix.width}x{pix.height}px")
+        except Exception as e:
+            # 单页失败：跳过并记录，不停机
+            pages.append({"no": no, "page": i + 1, "status": "缺失",
+                          "reason": f"页面损坏: {e}", "image": img_name})
+            logger.warn(f"页 {no} 拆页失败，已记入缺失: {e}")
+    doc.close()
+
+    manifest = {
+        "schema_version": load_config()["manifest_schema_version"],
+        "script_version": load_config()["version"],
+        "input_file": str(input_path),
+        "input_sha256": file_hash(input_path),
+        "created": now_str(),
+        "params": {"dpi": dpi},
+        "pages": pages,
+    }
+    with open(work_dir / "manifest.json", "w", encoding="utf-8") as f:
+        json.dump(manifest, f, ensure_ascii=False, indent=2)
+
+    # text.csv：UTF-8-SIG，用户只需填 no 和 text；已存在则不覆盖，保住用户填写的内容
+    csv_path = work_dir / "text.csv"
+    if not csv_path.exists():
+        with open(csv_path, "w", encoding="utf-8-sig", newline="") as f:
+            w = csv.writer(f)
+            w.writerow(["no", "text", "x", "y", "size", "color", "align", "status"])
+            for p in pages:
+                if p.get("status") != "缺失":
+                    w.writerow([p["no"], "", "", "", "", "", "", "待审核"])
+
+    # order.csv：默认 1→1 原序；已存在则不覆盖，保住用户改过的页序
+    order_path = work_dir / "order.csv"
+    if not order_path.exists():
+        with open(order_path, "w", encoding="utf-8-sig", newline="") as f:
+            w = csv.writer(f)
+            w.writerow(["new_no", "old_no", "replace_from"])
+            for p in pages:
+                w.writerow([f"{p['page']:03d}", f"{p['page']:03d}", ""])
+
+    # 原始快照：恢复口令的依据（拆页时的最原始页序，之后永不改动）
+    # 注意：与 order.csv 是否存在解耦——只要 origin.csv 缺，就按本次拆页
+    # 重建（用于补建老任务缺失的 origin.csv）
+    origin_path = work_dir / "origin.csv"
+    if not origin_path.exists():
+        with open(origin_path, "w", encoding="utf-8-sig", newline="") as f:
+            w = csv.writer(f)
+            w.writerow(["new_no", "old_no", "replace_from"])
+            for p in pages:
+                w.writerow([f"{p['page']:03d}", f"{p['page']:03d}", ""])
+
+    logger.info(f"拆页完成，共 {len(pages)} 页，已生成 manifest.json / text.csv / order.csv / origin.csv")
+
+============================================================
+【文件】docs\AI口令模板.txt  (2534 字节, 48 行, 编码=utf-8, 缩进=空格)
+来源: D:\压缩\开发中\docs\AI口令模板.txt
+============================================================
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━
+     PDF 工具箱 · AI 口令模板
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━
+   把本文件全文发给 AI（豆包/ChatGLM 均可），
+   然后用大白话说需求，AI 会回你口令，粘进程序即可。
+
+   ■ 一、换页口令（每行一条）
+     2换3   第2位和第3位的页对调
+     2替5   第2位改用原第5页的内容
+     取消2  取消第2位的替换
+     删3    删掉第3位；删2-4 范围删除
+     空3    第3位变空白页
+     恢复   整本回到原始页序
+   示例——用户："把第2页和第3页对调，再把第5页删掉"
+        输出：2换3
+              删5
+
+   ■ 二、格子填字（表格里有格子时用）
+     （页号）R行C列=文字，可连写
+   示例——用户："第1页项目名称填某某物流公司，编号填 WL-2024-001"
+        输出：（1）R2C2=某某物流公司（1）R3C2=WL-2024-001
+   规则：R行C列=表格第几行第几列，从1数起；同一格别重复出现；
+   用户没说清哪个格子时先问，不要猜。
+   前提：这页得先扫出格子（文字版 PDF 拆页自动扫；
+   照片扫描件要点程序里的【扫图片格子】按钮）。
+   用户说扫不出来/没有格子时，改用下面的整页插字。
+
+   ■ 三、整页插字（不用格子，任何页都能用）
+     （页号）文字，可连写，如：（1）封面标题（2）第一章
+   说明：
+   · 没定过坐标的字会自动落在页面左下角，
+     之后在程序里用【点图定位置】点哪挪哪
+   · 照片扫描件（没有文字层的 PDF）插字就用这个，
+     别用格子口令
+   示例——用户："照片PDF，第1页加个标题《货运单》，第3页补个日期2024年5月"
+        输出：（1）《货运单》（3）2024年5月
+
+   ■ 四、怎么选（AI 判断用）
+     用户提到"表格/格子/第几行第几列" → 用格子口令（二）
+     其他一切插字需求（尤其照片件）   → 用整页插字（三）
+     拿不准、且格子口令报"没这格"时  → 改用整页插字并提醒用户
+                                        可用点图定位置微调
+
+   ■ 输出要求
+     只输出口令本身，一行一条，不要解释、不要加序号、
+     不要用代码块包裹。
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+============================================================
+【文件】docs\detect.py  (833 字节, 26 行, 编码=utf-8, 缩进=4空格, 语法✔)
+来源: D:\压缩\开发中\docs\detect.py
+============================================================
+# -*- coding: utf-8 -*-
+from pathlib import Path
+path = Path(__file__).parent / "待办与坑.txt"
+data = path.read_bytes()
+print("前16字节(hex):", data[:16].hex())
+print("-" * 50)
+
+winner = None
+for enc in ["utf-8-sig", "utf-8", "utf-16", "gb18030", "big5", "shift_jis"]:
+    try:
+        text = data.decode(enc)
+        print(f"[{enc}] 前60字: {text[:60]!r}")
+        if winner is None and enc not in ("utf-8",):
+            winner = enc
+    except Exception:
+        print(f"[{enc}] 解码失败")
+
+print("-" * 50)
+if winner:
+    out = path.parent / "待办与坑_utf8.txt"
+    with open(out, "w", encoding="utf-8") as f:
+        f.write(data.decode(winner))
+    print(f"已用 [{winner}] 解码并另存为: {out}")
+else:
+    print("所有编码都解不出，文件可能已被破坏，需重写")
+
+============================================================
+【文件】docs\使用说明.txt  (8485 字节, 180 行, 编码=utf-8, 缩进=空格)
+来源: D:\压缩\开发中\docs\使用说明.txt
+============================================================
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  PDF 工具箱 使用说明（v0.7.4）
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+一、它会做什么
+
+  把一份 PDF 拆成单页图 → 你可以调整页序、自动找到表格空位、
+  往格子里填字或往页面任意位置插字 → 最后合成一份新的 PDF。
+  你的原始文件【永远不会被改动】，成品另外生成。
+  中途关机、手滑都不怕——每一步都自动存盘。
+
+
+二、四步出成品
+
+  ① 选择文件     点【选择文件】选你的 PDF（首次会自动拆页出表、扫描空位）
+  ② 攒指令       换页口令、批量填字、格子填字，都可以先【加入队列】
+  ③ 预览确认     点【点图定位置】在页面图上直接点出文字位置，
+                 蓝虚线框就是程序找到的表格空位
+  ④ 出成品       检查队列无误 → 点【逐条执行并出成品】
+                 （跑完自动体检，通过才生成，并核对页数）
+
+
+三、换页
+
+  1. 单条口令：输进"口令"框 →【立即执行】马上生效，或【加入队列】攒着
+       2换3     第2位和第3位的页对调
+       2替5     第2位改用原第5页的内容（相当于把5页的图搬来）
+       取消2    取消第2位的替换，恢复用自己原页
+       看       查看当前页序
+       删3      删掉第3位（后面顶上来，成品变薄）
+       删2-4    范围删除第2到4位
+       空3      第3位变空白页（页数不变）
+       恢复     整本回到原始页序（删掉的页也回来）
+
+  2. 批量口令：大框里每行一条，如
+       1换2
+       3替5
+     点【批量立即执行】或【批量加入队列】。
+     也可以把《AI口令模板.txt》整份发给 AI（豆包/ChatGLM 都行），
+     用大白话说需求，AI 回你口令，逐行粘进来即可。
+
+  3. 整本倒序：点【全部倒序→队列】
+     注意：倒序会清掉"替"的标记，需要的话替完再倒，或倒完重新替。
+
+
+四、插字
+
+  插字分两种玩法，批量框会自动识别：
+
+  ── 玩法一：格子填字（推荐，表格页专用）──
+
+    程序拆页时会自动扫描每页的表格空位（存进 slots.json）。
+    口令格式：（页号）R行C列=文字，可连写：
+
+      （1）R2C2=某某项目（1）R4C2=张三（7）R2C2=某某公司
+
+    · R2C2 = 第2行第2列的格子（编号在预览图的蓝框角标上能看到）
+    · 同一页可以填多个格子（这是允许的，表会自动加行）
+    · 同一个格子重复填 = 覆盖，不会涨行，放心改
+    · 位置、字号自动按空位算好，不用手动定坐标
+    · 填完点图核对：点【点图定位置】能看到每个格子的位置效果
+
+  ── 玩法二：整页插字（表格外的任意位置）──
+
+    口令格式：（页号）文字，可连写：
+
+      （1）封面标题（2）第一章
+
+    只填文字不带坐标，坐标需要自己定：
+    左边选页 → 填【文字】→ 点【点图定位置】→ 在图上点一下
+    → x/y 自动填好 → 关窗 → 点【保存此页】。
+
+  小贴士：
+    · 点图定位置时，点在蓝虚线框内 = 自动吸附到格子（推荐）
+    · 红点只是位置预览，最终字体样式以成品 PDF 为准
+    · 字号、颜色都有下拉可选，也能手输（如 10.5、#336699）
+    · 坐标单位是 PDF 点（A4 页宽595、高842）
+
+
+五、指令队列（推荐的干活方式）
+
+  · 攒：所有口令、倒序、批量填字都能【加入队列】，此时什么都没改
+  · 审：队列列表里逐条预览，【删除选中】去掉不要的，【清空队列】重来
+  · 跑：点【逐条执行并出成品】——
+        成功一条就从队列删一条，边跑边存盘；
+        中途出错就停下，队列里剩下的就是"还没执行的"；
+        修好问题再点一次，只会跑剩余的，已生效的绝不会重复执行；
+        全部跑完自动体检两张表，通过才生成成品并核对页数。
+
+  一句话：队列就是你这次任务的"草稿单"，确认了才允许落地。
+
+
+六、表格体检（自动的，不用你管）
+
+  每次出成品前程序会自动检查两张表，说人话报问题：
+    · 格子数不对、页号不是数字 → 多半是 Excel 编辑时格式坏了
+    · 页号超出总页数 → 页号写错了
+    · order.csv 缺行/多行/页号重复 → 不许手工加行删行
+  总页数以工作文件里的 manifest.json 为准（拆页时自动生成），
+  text.csv 允许一页多行（同页多格填字就是靠它）。
+
+
+七、常见问题
+
+  Q：点了【点图定位置】没反应？
+  A：需要 Pillow 库支持：pip install pillow，装好重开程序即可。
+
+  Q：预览图里点了位置，但忘了保存？
+  A：关窗后记得点【保存此页】；切页也会自动保存，两种都算数。
+
+  Q：格子口令提示"没这格"？
+  A：页号或 R行C列 不在 slots.json 里。先【拆页出表】重新扫描；
+     如果那页的表格是图片里手画的、线太淡，可能扫不出来，
+     退回玩法二手动定坐标。
+
+  Q：日志提示"正在执行任务，请等它跑完再操作"？
+  A：程序正在跑队列或拆页，这是保护机制，防止同时改数据出错，
+     等日志出现"执行完毕"再继续。
+
+  Q：口令输进去说"没这页"？
+  A：页号超出总页数。先点【拆页出表】看总共几页。
+
+  Q：成品里字没出现？
+  A：整页插字多半是没定坐标——看日志里的【待办】清单，逐页点图补上。
+
+  Q：执行到一半程序关了会丢吗？
+  A：不会。每条指令跑完立即存盘；重新打开选同一个 PDF，
+     之前的页序和文字都在。队列里没跑完的条目需要重新加入。
+
+  Q：想推倒重来？
+  A：口令【恢复】回到原始页序；【清空此页】清掉某页的字；
+     【清空队列】放弃所有攒着的指令；
+     彻底重来：关掉程序 → 删掉工作文件里的 text.csv 和 order.csv
+     → 重开点【拆页出表】。
+
+  Q：界面能换深色吗？
+  A：能。改 gui.py 顶部 THEME = "bootstrap-dark"，保存重开。
+
+
+八、文件都在哪
+
+  工作文件（两张表、每页的图、空位表 slots.json、页信息 manifest.json）、
+  成品 PDF、运行日志，都在源 PDF 旁边的"重建插字"文件夹里，
+  点【打开工作文件】直接打开。
+
+  核心文件：
+    order.csv   —— 页序（换页口令改的就是它）
+    text.csv    —— 要插的文字和位置（插字区改的就是它）
+    slots.json  —— 每页的表格空位（格子口令靠它定位）
+    manifest.json —— 每页宽高/状态（体检和坐标换算靠它）
+  平时不用碰它们，界面上的一切操作都会自动同步进去。
+
+━━━ 照片件插字（纯图片 PDF）━━━
+
+照片扫出来的 PDF 没有文字层，扫格子认不出表格，按下面的路子走：
+
+一、只想往页面某处插字（最常用）
+  1. 批量填字框敲：（1）标题（2）第一章 → 点【批量立即填】
+  2. 没定过坐标的字会自动落在页面左下角（x=50，底边上方一点），
+     日志会提示默认位置
+  3. 点【点图定位置】微调：点哪字落哪；保存此页
+  → 不用管格子，直接能插
+
+二、页面里有带框线的表格，想往格子里填
+  1. 先【拆页出表】（只走文字扫描，照片页扫不出是正常的）
+  2. 点【扫图片格子】（就是认照片里的表格框线）
+     → 日志逐页报告扫出几个空位；没框线的表格扫不出，属正常
+  3. 格子口令：（页号）R行C列=文字，如（3）R2C2=某某公司
+  4. 也可以点图定位置，点在蓝虚线框里 = 自动吸附到格子
+
+  说明：
+  · 扫图片格子只往没空位的页里填，不会动已扫出的结果
+  · 想重新扫全部：删掉工作目录里的 slots.json 再点
+  · 没装 numpy 会很慢（约10秒/页），建议先 pip install numpy
+
+
+
+
+
+
+============================================================
+【文件】docs\待办与坑.txt  (5636 字节, 96 行, 编码=utf-8, 缩进=空格)
+来源: D:\压缩\开发中\docs\待办与坑.txt
+============================================================
+【待办与坑】（2026-09-19 重建版，旧文件因编码损坏重写）
+
+== 坑：PyInstaller 打包 ==
+- build.bat 若用命令行参数打包，每次会重新生成 spec，
+  手改 spec 无效；要改 spec 就让 build.bat 直接用 spec 打包
+- 打包入口文件（launcher.py）必须单独测试：
+  python launcher.py 能弹出界面，才能打包
+  （gui.py 能跑 ≠ launcher 能跑）
+- gui.run_gui() 必须写在 try/except 外面，
+  放进 except 里会导致 import 成功就静默退出、无界面无报错
+- build.bat 要检查 errorlevel，否则打包失败也喊"打包完成"
+- 调试期 spec 里 console=True，能看报错；正式发布改回 False
+- launcher 已带崩溃日志兜底：exe 启动失败看旁边的 崩溃日志.txt
+
+== 坑：编码 ==
+- cmd 用 echo/重定向写中文 txt，默认 GBK 且无标签，
+  UTF-8 默认的编辑器打开就乱码；写中文文件先 chcp 65001
+  或直接在 VS Code 里写
+- 文件被错误编码打开后"保存"，内容会被替换符永久破坏，
+  不可恢复（本文件旧版就是这么没的）
+- bat 里有 chcp 65001 → 必须存 UTF-8；没有 → 必须存 ANSI
+
+== 待办 ==
+- [ ] 补回旧清单里还记得的条目（OCR 转写：PDF 转 Word，
+      原理是 PDF 内嵌图片…这条就是从残余碎片里认出的）
+- [ ] 正式包验证：spec console=False 重新打包，双击 exe 无黑窗
+1. 入口文件要单独测——源码能跑 ≠ 打包能跑
+2. 构建脚本必须会报错——失败的"成功"比失败更误事
+3. 编码要一次定对——错误保存会永久烧内容
+== 坑：改 gui.py ==
+- App 类的方法都是 4 格缩进、平级排列；
+  往中间插新方法前先看清上一个方法的 def 到哪结束，
+  插进别的方法肚子会把它的内嵌函数（如 do_split 的 worker）连根拔断
+
+== 坑：NameError 类报错先查 import ==
+- Pylance 报 "xxx is not defined"，九成不是那一行写错，
+  而是文件顶部没 import 对应模块
+- 修法：跳到文件最顶上补 import，别在报错行瞎改
+== 边界：并入 ==
+  - 新页号接在最大号后，删页留下的号洞不会被复用
+  - 对方 PDF 若是纯图片扫描件，扫不出空位 → 玩法二点图定坐标
+  - slots.json 合并按"字典+页号字符串键"处理，结构变了要同步 merger.py
+== 坑：线程里的变量 ==
+- 后台线程用的变量，最好在 def worker(参数) 里声明、
+  Thread(args=(...),) 传进去，别靠闭包"顺便看见"——
+  赋值代码挪个位置就是 NameError
+- 贴代码先扫占位符（×××、xxx、f5r 这类），原样粘进去必报错
+== 结案：slots.json 为空之谜 ==
+- 现象：新拆页 slots.json 只有 2 字节（{}），口令报"[没空位]"
+- 根因：测试 PDF"图片笔记(2).pdf"是纯图片扫描件，没有文字层，
+        表格空位扫描器扫不出格子——预期行为，非 bug
+- 旧的有货 slots.json 属于另一份 PDF（桌面副本项目拆的）
+- 规约：格子口令（R2C2=）只对文字版 PDF 可用；
+        纯图片件用"点图定位置"填字
+- 教训：报"文件没数据"先三问——找对文件了吗？同一份 PDF 吗？
+        这份 PDF 有文字层吗？（鼠标能选中文字=有）
+
+== 教训：双项目副本 ==
+- D:\桌面\开发中 和 D:\压缩\开发中 是两份项目副本，
+  测试结果来回打架。建议：留 D:\压缩\开发中 为主力，
+  桌面那份改名"旧版备份_勿动"或删除
+== 新需求：图片版 PDF 的格子支持 ==
+- 现状：格子口令只对文字版 PDF 可用，图片件报"[没空位]"
+- 方案：扫描器加"图片找线"段（A）+ 预览窗手动画格子（B）
+- 状态：等 slot_scanner.py 和表格样式确认后动工
+== 坑：VS Code 解释器与实际运行环境不一致 ==
+- 现象：Pylance 全线报 Import could not be resolved（黄警告），
+  但命令行运行一切正常
+- 根因：命令行用 Python314（库都装在这），VS Code 选的是别的解释器
+- 规约：报 import 警告先对账——命令行 python -c "import sys;
+  print(sys.executable)" 的路径 vs VS Code 右下角解释器，不一致先切换
+- 提醒：黄色警告≠红色错误，程序能不能跑以命令行实际运行为准
+
+== gui.py 验收进度 ==
+- 已过：do_sticker 死代码删除、_page_size 方法、扫图片格子按钮、
+        do_split 覆盖=True、腰斩版 _apply_slot_payload 删除
+- 欠一项：_apply_text_payload 里"没坐标自动落左下角"的调用块
+  （_page_size 已就位但未被调用，等于装了门没装锁）
+- 补上后跑 ①~⑥ 验收，重点 ① --image 输出 和 ③ 日志
+== 坑：tk vs ttk 前缀敲错 ==
+- ttk 没有 Toplevel；窗口类（Toplevel/Canvas/Listbox/Text）都在 tk 里
+- page_drag.py line33 ttk.Toplevel → tk.Toplevel，已修
+- 连带发现：上一轮 parent=self 的修复没实际落盘（报错行号原样），
+  规约：给过的修复代码要当场改完保存再测，"发过"≠"改过"
+
+== 坑：子窗口 import 原生 ttk 却用了 bootstyle ==
+- page_drag.py from tkinter import ttk + bootstyle → TclError，
+  __init__ 半途崩 = 灰窗（窗口在、控件没建全）
+- 规约：凡控件用 bootstyle 的文件，一律 import ttkbootstrap as ttk
+- 灰窗诊断口诀：Toplevel 出来了但全灰 → 八成 __init__ 中途崩，
+  看控制台最后一行 TclError 落在哪个控件上
+== 贴图调整窗补全 ==
+- StickerEditor 加 self._imgs={}（欠账清）、视图缩放（滚轮/Ctrl滚轮）、
+  平移（空白处拖动）；贴图本身的拖动/缩放逻辑不变
+
+
+============================================================
+【文件】docs\约定总纲.txt  (3107 字节, 52 行, 编码=utf-8, 缩进=空格)
+来源: D:\压缩\开发中\docs\约定总纲.txt
+============================================================
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  约定总纲（PDF 工具箱 · v0.7.4）
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+【一、目录与职责】
+core/ = 共用底层（splitter 拆页 / rebuilder 重建 / order 页序 /
+        inserter 旧版插字（已闲置，重建走 rebuilder 自己的插字）/ common 共用）
+modes/ = 模式（自动发现；一模式 = 一 mode_*.py，提供 run(params, log_print)）
+gui.py = 外壳；slot_scanner.py = 空位扫描；order_editor.py = 换页口令；
+page_drag.py = 拖拽排序；merger.py = 并入；sticker.py = 贴图；
+check_tables.py = 体检；run_task.py = CLI 流程；launcher.py = 打包入口
+输出三分：最终文件 / 工作文件 / 日志。
+
+【二、核心文件（都在 工作文件/ 下）】
+manifest.json  页信息（宽高/旋转/DPI/状态）；总页数以它为准
+order.csv      页序（new_no,old_no,replace_from）
+text.csv       插字（no,text,x,y,size,color,align,status）
+slots.json     空位 [{编码P页R行C列, 矩形, 字号}]；格子口令靠它
+origin.csv     拆页时的原始页序快照，永不改动，【恢复】口令的依据
+sticker.csv    贴图（页号,图片路径,x,y,w，比例坐标）
+missing.csv    缺失/失败记录
+
+【三、坐标单位】统一 PDF 点（pt），原点=页面左上角；
+像素↔点换算只看 manifest 的宽高。
+
+【四、CSV 铁律】
+1. 一律 UTF-8-SIG，写入 newline=""（坑：编码烧毁过两份文档）
+2. 已存在的表绝不覆盖（split_pdf 只在缺表时生成）
+3. text.csv 允许同页多行（格子填字靠它）；no 列照抄表内补零格式
+4. order.csv：new_no 必须从 1 连续、不重复；old_no 除 0（空白）外不重复
+
+【五、slot_scanner 两入口，界限分明】
+scan_pdf        文字/矢量找表，拆页默认走，禁止自动回退图片扫描
+scan_pdf_image  图片找线，只由 GUI"扫图片格子"按钮触发，
+                只往没空位的页里填。性能红线：像素处理必须 numpy
+                向量化；纯 Python 逐像素（~10秒/页）只许做兜底
+
+【六、批量填字自动落位】
+没坐标的文字自动落页面左下角（x=50, y=页高-36），日志提示，
+点图定位置微调。照片件主路径。
+
+【七、异常分级】单页失败 → 记缺失不停机；输出目录不可写 /
+输入损坏 / 依赖缺失 → FatalError 立即停止。原文件永远只读。
+
+【八、指令队列】口令/填字/倒序都能攒；执行时成功一条删一条，
+失败即停，重跑只跑剩余的；全部完成+体检通过才出成品。
+
+【九、版本与文档同步】改约定先加进 docs/待办与坑.txt；
+版本号 gui.py 的 VERSION 与 config.json 的 version 保持一致。
+
+【十、MVP 边界】不做 OCR、不做 Word。打包 = launcher.py + build.bat
+（--onedir）；入口文件必须单独测；bat 要查 errorlevel。
+
+============================================================
+【文件】gui.py  (58987 字节, 1305 行, 编码=utf-8, 缩进=4空格, 语法✔)
+来源: D:\压缩\开发中\gui.py
+============================================================
+# -*- coding: utf-8 -*-
+"""GUI 外壳：选文件、模式、输出、运行、Help、换页、插字、指令队列（攒完逐条执行出成品）。
+
+v0.7.4（在 v0.7.3 基础上：修复借图查重误报）：
+v0.7.3（在 v0.7.2 换皮版基础上）：
+  1. 补回【点图定位置】预览窗（同样主题化，跟随明暗主题）；
+  2. 标题栏版本号更新。
+（v0.7.2：ttkbootstrap 2.x 换皮，逻辑零改动；
+  v0.7：busy 锁补全、队列增量执行、Help 指向《使用说明.txt》、
+  线程安全、CSV 容错、跨平台打开、fitz 降级、颜色 hex 提取等，全保留。）
+"""
+import tkinter as tk
+from tkinter import filedialog, messagebox
+import subprocess, threading, json, contextlib, io, csv, os, re
+from pathlib import Path
+import sys
+
+try:
+    import ttkbootstrap as ttkb          # pip install ttkbootstrap（2.x）
+except ImportError:
+    raise SystemExit("缺少 ttkbootstrap，请先运行：pip install ttkbootstrap")
+
+class ScrollFrame(ttkb.Frame):
+    def __init__(self, master, **kw):
+        super().__init__(master, **kw)
+        canvas = tk.Canvas(self, highlightthickness=0)
+        self.canvas = canvas
+        vsb = ttkb.Scrollbar(self, orient="vertical", command=canvas.yview)
+        hsb = ttkb.Scrollbar(self, orient="horizontal", command=canvas.xview)
+        self.inner = ttkb.Frame(canvas)
+        self.inner.bind("<Configure>",
+            lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
+        self._win = canvas.create_window((0, 0), window=self.inner, anchor="nw")
+        # 窗口变宽时，内容跟着拉宽；窄于 900 时出现横向滚动条
+        canvas.bind("<Configure>", self._on_resize)
+        canvas.configure(yscrollcommand=vsb.set, xscrollcommand=hsb.set)
+        canvas.grid(row=0, column=0, sticky="nsew")
+        vsb.grid(row=0, column=1, sticky="ns")
+        hsb.grid(row=1, column=0, sticky="ew")
+        self.rowconfigure(0, weight=1)
+        self.columnconfigure(0, weight=1)
+        _wheel_state = {"acc": 0, "job": None}
+
+        def _on_wheel(e):
+            _wheel_state["acc"] += e.delta
+            if _wheel_state["job"]:
+                return
+            def _flush():
+                _wheel_state["job"] = None
+                d = _wheel_state["acc"]
+                _wheel_state["acc"] = 0
+                canvas.yview_scroll(-int(d / 120), "units")
+            _wheel_state["job"] = canvas.after(30, _flush)
+
+        canvas.bind_all("<MouseWheel>", _on_wheel)
+
+    def _on_resize(self, e):
+        e.widget.itemconfigure(self._win, width=max(e.width, 900))
+
+try:
+    import fitz          # PyMuPDF，只用于最后数页数；没装也能跑，只是不校验页数
+except ImportError:
+    fitz = None
+
+PROJECT_ROOT = Path(__file__).resolve().parent
+
+from core.common import ensure_output_dir, unique_path, Logger, FatalError
+from core.splitter import split_pdf
+from core.rebuilder import rebuild
+import order_editor
+from check_tables import check
+import slot_scanner
+
+TASK = "重建插字"
+TEXT_HEADER = ["no", "text", "x", "y", "size", "color", "align", "status"]
+
+SIZES = ["8", "9", "10", "10.5", "11", "12", "14", "16", "18", "22", "24", "36", "48"]
+COLORS = ["黑 #000000", "红 #ff0000", "蓝 #0000ff", "绿 #008000",
+          "灰 #808080", "白 #ffffff", "黄 #ffff00", "棕 #8b4513"]
+
+HEX_RE = re.compile(r"#[0-9a-fA-F]{3,8}")
+
+# 主题：flatly 在 2.x 属旧名，可用但会有一行无害警告；
+# 想彻底没警告可换 "bootstrap-light"（默认）或 "minty-light"；
+# 想要深色界面换 "bootstrap-dark"。
+THEME = "flatly"
+FONT = ("Microsoft YaHei UI", 10)
+
+VERSION = "v0.7.4"
+
+class App:
+    def __init__(self, modes):
+        self.modes = modes
+        self.win = ttkb.Window(title=f"PDF 工具箱 {VERSION}", themename=THEME)
+        self.win.geometry("1180x1020")
+        self.win.minsize(760, 640)
+        self.style = self.win.style
+        try:                                # 全局默认字体（中文更清爽）
+            self.style.configure(".", font=FONT)
+        except Exception:
+            pass
+        self.win.option_add("*Font", FONT)  # 经典 tk 控件的默认字体
+        self.order_header = None
+        self.order_body = None
+        self.text_rows = []
+        self.work_dir = None
+        self.final_dir = None
+        self.log_dir = None
+        self.page_wh = (0, 0)
+        self.cur_text_i = None
+        self.queue = []              # 指令队列：[{"kind":..., "payload":...}]，与 lb_queue 一一对应
+        self.busy = False            # 任务执行中标记，执行期间冻结一切写操作
+        self.sf = ScrollFrame(self.win)
+        self.sf.pack(fill="both", expand=True)
+        self._build(self.sf.inner)
+    # ---------- 主题化小组件 ----------
+
+    def _listbox(self, parent, **kw):
+        """Listbox 是经典 tk 控件（ttkbootstrap 2.x 不提供主题版），
+        从当前主题取色手工上色，观感与其他控件统一。"""
+        c = self.style.colors
+        kw.setdefault("relief", "flat")
+        kw.setdefault("borderwidth", 0)
+        kw.setdefault("highlightthickness", 1)
+        kw.setdefault("activestyle", "none")
+        kw.setdefault("font", FONT)
+        try:
+            kw.setdefault("bg", c.inputbg)
+            kw.setdefault("fg", c.inputfg)
+            kw.setdefault("selectbackground", c.primary)
+            kw.setdefault("selectforeground", c.selectfg)
+            kw.setdefault("highlightbackground", c.border)
+            kw.setdefault("highlightcolor", c.primary)
+        except Exception:
+            pass
+        return tk.Listbox(parent, **kw)
+
+    def _scrolled_text(self, parent, **kw):
+        """主题化 Text + 竖滚动条组合（同上，经典 tk 控件手工上色），
+        返回 (外框, 文本框)。"""
+        c = self.style.colors
+        frame = ttkb.Frame(parent)
+        kw.setdefault("font", FONT)
+        kw.setdefault("relief", "flat")
+        kw.setdefault("borderwidth", 0)
+        kw.setdefault("highlightthickness", 1)
+        try:
+            kw.setdefault("bg", c.inputbg)
+            kw.setdefault("fg", c.inputfg)
+            kw.setdefault("insertbackground", c.inputfg)   # 光标颜色
+            kw.setdefault("selectbackground", c.primary)
+            kw.setdefault("selectforeground", c.selectfg)
+            kw.setdefault("highlightbackground", c.border)
+            kw.setdefault("highlightcolor", c.primary)
+        except Exception:
+            pass
+        txt = tk.Text(frame, **kw)
+        sb = tk.Scrollbar(frame, command=txt.yview, orient="vertical")
+        try:
+            sb.config(troughcolor=c.bg, background=c.border,
+                      activebackground=c.secondary)
+        except tk.TclError:
+            pass
+        txt.configure(yscrollcommand=sb.set)
+        sb.pack(side="right", fill="y")
+        txt.pack(side="left", fill="both", expand=True)
+        return frame, txt
+
+    def _build(self, parent=None):
+        if parent is None:
+            parent = self
+        # ===== 顶部标题 =====
+        head = ttkb.Frame(parent); head.pack(fill="x", padx=12, pady=(10, 0))
+        ttkb.Label(head, text="PDF 工具箱",
+                    font=("Microsoft YaHei UI", 15, "bold"),
+                    bootstyle="primary").pack(side="left")
+        ttkb.Label(head, text=f"{VERSION} · {TASK}",
+                    bootstyle="secondary").pack(side="left", padx=8, pady=3)
+        ttkb.Separator(parent).pack(fill="x", padx=12, pady=5)
+
+        f1 = ttkb.Frame(parent); f1.pack(fill="x", padx=10, pady=5)
+        ttkb.Label(f1, text="输入文件:").pack(side="left")
+        self.e_in = ttkb.Entry(f1); self.e_in.pack(side="left", fill="x", expand=True, padx=5)
+        ttkb.Button(f1, text="选择文件", bootstyle="secondary outline",
+                    command=self.pick_file).pack(side="left")
+
+        f2 = ttkb.Frame(parent); f2.pack(fill="x", padx=10, pady=5)
+        ttkb.Label(f2, text="模式:").pack(side="left", padx=(0, 8))
+        self.mode_var = tk.StringVar(value=next(iter(self.modes), ""))
+        for name in self.modes:
+            ttkb.Radiobutton(f2, text=name, variable=self.mode_var,
+                                value=name,
+                                bootstyle="primary toolbutton").pack(side="left", padx=2)
+
+        f3 = ttkb.Frame(parent); f3.pack(fill="x", padx=10, pady=5)
+        ttkb.Label(f3, text="输出目录:").pack(side="left")
+        self.e_out = ttkb.Entry(f3); self.e_out.pack(side="left", fill="x", expand=True, padx=5)
+        ttkb.Button(f3, text="选择目录", bootstyle="secondary outline",
+                    command=self.pick_dir).pack(side="left")
+
+        f4 = ttkb.Frame(parent); f4.pack(fill="x", padx=10, pady=(5, 2))
+        self.b_run = ttkb.Button(f4, text="一键运行", bootstyle="primary", command=self.run)
+        self.b_run.pack(side="left")
+        ttkb.Button(f4, text="打开输出目录", bootstyle="secondary outline",
+                    command=self.open_dir).pack(side="left", padx=5)
+        ttkb.Button(f4, text="Help", bootstyle="info outline", command=self.help).pack(side="left")
+
+        # ===== 换页区 =====
+        f5 = ttkb.Labelframe(parent, bootstyle="info",
+                                text=" 换页（口令可立即执行，也可加入队列攒着） ")
+        f5.pack(fill="x", padx=10, pady=5)
+        self.lb_order = self._listbox(f5, height=4)
+        self.lb_order.pack(side="left", fill="both", expand=True, padx=5, pady=5)
+        f5r = ttkb.Frame(f5); f5r.pack(side="right", fill="y", padx=5, pady=5)
+        ttkb.Label(f5r, text="口令:").pack(anchor="w")
+        self.e_cmd = ttkb.Entry(f5r, width=14)
+        self.e_cmd.pack(anchor="w")
+        self.e_cmd.bind("<Return>", lambda e: self.exec_cmd())
+        rowc = ttkb.Frame(f5r); rowc.pack(anchor="w", pady=2)
+        ttkb.Button(rowc, text="立即执行", bootstyle="success",
+                    command=self.exec_cmd).pack(side="left")
+        ttkb.Button(f5r, text="加入队列", bootstyle="secondary outline",
+                    command=self.queue_cmd).pack(anchor="w", pady=2)
+        ttkb.Button(f5r, text="全部倒序→队列", bootstyle="secondary outline",
+                    command=self.queue_reverse).pack(anchor="w", pady=2)
+        ttkb.Button(f5r, text="批量加入队列", bootstyle="info outline",
+                    command=self.queue_batch_cmd).pack(fill="both", expand=True)
+        ttkb.Button(f5r, text="拆页出表", bootstyle="info outline",
+                    command=self.do_split).pack(anchor="w", pady=2)
+        ttkb.Button(f5r, text="拖拽排序", bootstyle="info outline",
+                   command=self.open_page_drag).pack(anchor="w", pady=2)
+        ttkb.Button(f5r, text="并入PDF", bootstyle="info outline",
+                    command=self.do_merge).pack(anchor="w", pady=2)
+        ttkb.Button(f5r, text="贴图", bootstyle="info outline",
+                    command=self.do_sticker).pack(anchor="w", pady=2)
+        ttkb.Button(f5r, text="扫图片格子", bootstyle="info outline",
+                    command=self.do_scan_image).pack(anchor="w", pady=2)
+        ttkb.Button(f5r, text="打开工作文件", bootstyle="secondary outline",
+                    command=self.open_work).pack(anchor="w", pady=2)
+
+        f5b = ttkb.Frame(f5); f5b.pack(side="bottom", fill="x", padx=5, pady=3)
+        ttkb.Label(f5b, text="批量口令（每行一条，如 1换2）：").pack(anchor="w")
+        row = ttkb.Frame(f5b); row.pack(fill="x")
+        frame_cmd, self.t_cmd = self._scrolled_text(row, height=3)
+        frame_cmd.pack(side="left", fill="both", expand=True)
+        btns = ttkb.Frame(row); btns.pack(side="left", fill="y", padx=(5, 0))
+        ttkb.Button(btns, text="批量\n立即执行", bootstyle="success",
+                    command=self.exec_batch_cmd).pack(fill="both", expand=True)
+        ttkb.Button(btns, text="批量\n加入队列", bootstyle="secondary outline",
+                    command=self.queue_batch_cmd).pack(fill="both", expand=True)
+
+        # ===== 插字区 =====
+        f6 = ttkb.Labelframe(parent, bootstyle="primary",
+                                text=" 插字（左边选页 → 右边填 → 切页自动保存；批量填字可入队列） ")
+        f6.pack(fill="x", padx=10, pady=5)
+        self.lb_text = self._listbox(f6, height=4, width=24)
+        self.lb_text.pack(side="left", fill="y", padx=5, pady=5)
+        self.lb_text.bind("<<ListboxSelect>>", self.on_pick_page)
+
+        f6r = ttkb.Frame(f6); f6r.pack(side="left", fill="both", expand=True, padx=5, pady=2)
+        r1 = ttkb.Frame(f6r); r1.pack(fill="x", pady=2)
+        ttkb.Label(r1, text="文字:").pack(side="left")
+        self.e_text = ttkb.Entry(r1); self.e_text.pack(side="left", fill="x", expand=True, padx=5)
+
+        r2 = ttkb.Frame(f6r); r2.pack(fill="x", pady=2)
+        ttkb.Label(r2, text="x:").pack(side="left")
+        self.e_x = ttkb.Entry(r2, width=8); self.e_x.pack(side="left")
+        ttkb.Label(r2, text="y:").pack(side="left", padx=(8, 0))
+        self.e_y = ttkb.Entry(r2, width=8); self.e_y.pack(side="left")
+        ttkb.Label(r2, text="字号:").pack(side="left", padx=(8, 0))
+        self.cb_size = ttkb.Combobox(r2, width=6, values=SIZES)
+        self.cb_size.pack(side="left")
+        self.lbl_wh = ttkb.Label(r2, text="", bootstyle="secondary")
+        self.lbl_wh.pack(side="left", padx=10)
+
+        r3 = ttkb.Frame(f6r); r3.pack(fill="x", pady=2)
+        ttkb.Label(r3, text="颜色:").pack(side="left")
+        self.cb_color = ttkb.Combobox(r3, width=14, values=COLORS)
+        self.cb_color.pack(side="left")
+        self.cb_color.set(COLORS[0])
+        ttkb.Label(r3, text="对齐:").pack(side="left", padx=(8, 0))
+        self.align_var = tk.StringVar(value="left")
+        ttkb.Combobox(r3, textvariable=self.align_var, width=8,
+                        values=("left", "center", "right"),
+                        state="readonly").pack(side="left")
+        ttkb.Label(r3, text="状态:").pack(side="left", padx=(8, 0))
+        self.status_var = tk.StringVar(value="已确认")
+        ttkb.Combobox(r3, textvariable=self.status_var, width=8,
+                        values=("已确认", "待审核"),
+                        state="readonly").pack(side="left")
+
+        r4 = ttkb.Frame(f6r); r4.pack(fill="x", pady=2)
+        ttkb.Button(r4, text="保存此页", bootstyle="success",
+                    command=self.save_page).pack(side="left")
+        ttkb.Button(r4, text="清空此页", bootstyle="secondary outline",
+                    command=self.clear_page).pack(side="left", padx=5)
+        ttkb.Button(r4, text="看这页的图", bootstyle="info outline",
+                    command=self.view_page_img).pack(side="left")
+        ttkb.Button(r4, text="点图定位置", bootstyle="info outline",
+                    command=self.preview_page).pack(side="left", padx=5)
+
+        f6b = ttkb.Frame(f6); f6b.pack(side="bottom", fill="x", padx=5, pady=3)
+        ttkb.Label(f6b, text="批量填字：（页号）文字，如 （1）封面标题（2）第一章").pack(anchor="w")
+        row2 = ttkb.Frame(f6b); row2.pack(fill="x")
+        frame_batch, self.t_batch = self._scrolled_text(row2, height=3)
+        frame_batch.pack(side="left", fill="both", expand=True)
+        btns2 = ttkb.Frame(row2); btns2.pack(side="left", fill="y", padx=(5, 0))
+        ttkb.Button(btns2, text="批量\n立即填", bootstyle="success",
+                    command=self.apply_batch_text_now).pack(fill="both", expand=True)
+        ttkb.Button(btns2, text="批量\n加入队列", bootstyle="primary outline",
+                    command=self.queue_batch_text).pack(fill="both", expand=True)
+
+        # ===== 指令队列区 =====
+        f7 = ttkb.Labelframe(parent, bootstyle="warning",
+                                text=" 指令队列（攒着不动；执行时成功一条删一条，失败即停，重跑只跑剩余的） ")
+        f7.pack(fill="both", padx=10, pady=5)
+        self.lb_queue = self._listbox(f7, height=5)
+        self.lb_queue.pack(side="left", fill="both", expand=True, padx=5, pady=5)
+        f7r = ttkb.Frame(f7); f7r.pack(side="right", fill="y", padx=5, pady=5)
+        ttkb.Button(f7r, text="删除选中", bootstyle="secondary outline",
+                    command=self.queue_del).pack(anchor="w", pady=2)
+        ttkb.Button(f7r, text="清空队列", bootstyle="danger outline",
+                    command=self.queue_clear).pack(anchor="w", pady=2)
+        self.b_exec_queue = ttkb.Button(f7r, text="逐条执行\n并出成品",
+                                        bootstyle="warning", command=self.run_queue)
+        self.b_exec_queue.pack(anchor="w", pady=6)
+
+        frame_log, self.log = self._scrolled_text(parent, height=7, wrap="word")
+        frame_log.pack(fill="both", expand=True, padx=10, pady=5)
+
+
+     # ---------- 线程调度 / 基础 ----------
+
+    def _ui(self, fn, *args, **kwargs):
+        """把 fn 异步调度到主线程执行（不等待）。"""
+        try:
+            self.win.after(0, lambda: fn(*args, **kwargs))
+        except tk.TclError:
+            pass  # 窗口已关闭
+
+    def _ui_sync(self, fn, *args, **kwargs):
+        """把 fn 调度到主线程执行并等待结果（后台线程专用）。"""
+        if threading.current_thread() is threading.main_thread():
+            return fn(*args, **kwargs)
+        done = threading.Event()
+        box = {}
+
+        def _run():
+            try:
+                box["ret"] = fn(*args, **kwargs)
+            except BaseException as e:
+                box["err"] = e
+            finally:
+                done.set()
+
+        try:
+            self.win.after(0, _run)
+        except tk.TclError:
+            raise RuntimeError("窗口已关闭")
+        done.wait()
+        if "err" in box:
+            raise box["err"]
+        return box.get("ret")
+
+    def _set_busy(self, busy):
+        self.busy = busy
+        state = "disabled" if busy else "normal"
+        self.b_run.config(state=state)
+        self.b_exec_queue.config(state=state)
+
+    def _check_busy(self):
+        if self.busy:
+            self.log_print("[提示] 正在执行任务，请等它跑完再操作")
+            return True
+        return False
+
+    def _open_path(self, target):
+        """跨平台打开文件/目录。"""
+        target = str(target)
+        try:
+            if sys.platform == "win32":
+                os.startfile(target)
+            elif sys.platform == "darwin":
+                subprocess.Popen(["open", target])
+            else:
+                subprocess.Popen(["xdg-open", target])
+        except Exception as e:
+            self.log_print(f"[提示] 打不开：{target}（{e}）")
+
+    def pick_file(self):
+        if self._check_busy():
+            return
+        p = filedialog.askopenfilename(
+            filetypes=[("PDF/图片", "*.pdf *.png *.jpg *.jpeg *.bmp *.tif *.tiff")])
+        if p:
+            self.e_in.delete(0, "end"); self.e_in.insert(0, p)
+            self.try_load_tables()
+
+    def pick_dir(self):
+        if self._check_busy():
+            return
+        p = filedialog.askdirectory()
+        if p: self.e_out.delete(0, "end"); self.e_out.insert(0, p)
+
+    def log_print(self, msg):
+        """线程安全的日志输出：后台线程里调用会自动转回主线程。"""
+        if threading.current_thread() is not threading.main_thread():
+            self._ui(self.log_print, msg)
+            return
+        self.log.insert("end", str(msg) + "\n")
+        self.log.see("end")
+
+    def input_path(self):
+        inp = self.e_in.get().strip()
+        if not inp:
+            messagebox.showwarning("提示", "请先选择输入文件")
+            return None
+        return Path(inp)
+
+    def ensure_dirs(self, pdf):
+        self.final_dir, self.work_dir, self.log_dir = ensure_output_dir(
+            self.e_out.get().strip() or None, pdf, task_name=TASK)
+        if not (self.work_dir / "order.csv").exists():
+            self.log_print("还没拆过页，先自动拆一次……")
+            split_pdf(pdf, self.work_dir, Logger(self.log_dir, name="GUI"))
+
+    def try_load_tables(self):
+        if self._check_busy():          # ★ 执行中禁止换文件，防 work_dir 串门
+            return
+        pdf = self.input_path()
+        if not pdf or not pdf.exists():
+            return
+        try:
+            self.ensure_dirs(pdf)
+        except Exception as e:
+            self.log_print(f"[致命] {e}")
+            return
+        self.load_order()
+        self.load_text()
+
+    # ---------- 队列管理 ----------
+
+    def queue_add(self, kind, payload, label):
+        if self._check_busy():
+            return
+        if kind in ("cmd", "text") and self.order_body is None:
+            self.log_print("先拆页出表，再攒指令")
+            return
+        if kind == "text" and not self.text_rows:
+            self.log_print("text.csv 还没就绪，先拆页出表")
+            return
+        self.queue.append({"kind": kind, "payload": payload})
+        self.lb_queue.insert("end", label)
+        self.log_print(f"已加入队列（共 {len(self.queue)} 条）：{label}")
+
+    def queue_cmd(self):
+        cmd = self.e_cmd.get().strip()
+        if not cmd:
+            return
+        self.queue_add("cmd", cmd, f"[口令] {cmd}")
+        self.e_cmd.delete(0, "end")
+
+    def queue_batch_cmd(self):
+        if self._check_busy():
+            return
+        lines = [l.strip() for l in self.t_cmd.get("1.0", "end").splitlines() if l.strip()]
+        if not lines:
+            self.log_print("批量口令框是空的")
+            return
+        for l in lines:
+            self.queue.append({"kind": "cmd", "payload": l})
+            self.lb_queue.insert("end", f"[口令] {l}")
+        self.log_print(f"已加入队列 {len(lines)} 条口令（共 {len(self.queue)} 条）")
+        self.t_cmd.delete("1.0", "end")
+
+    def queue_reverse(self):
+        self.queue_add("reverse", None, "[倒序] 整本倒序")
+
+    def queue_batch_text(self):
+        if self._check_busy():
+            return
+        raw = self.t_batch.get("1.0", "end").strip()
+        if not raw:
+            self.log_print("批量填字框是空的")
+            return
+        one = raw.replace("\n", " ")
+        self.queue_add("text", one, f"[填字] {one[:40]}{'…' if len(one) > 40 else ''}")
+        self.t_batch.delete("1.0", "end")
+
+    def queue_del(self):
+        if self._check_busy():
+            return
+        sel = self.lb_queue.curselection()
+        if not sel:
+            return
+        i = sel[0]
+        self.lb_queue.delete(i)
+        del self.queue[i]
+
+    def queue_clear(self):
+        if self._check_busy():
+            return
+        self.queue.clear()
+        self.lb_queue.delete(0, "end")
+        self.log_print("队列已清空")
+
+    def _queue_pop_head(self):
+        """主线程调用：移除队首一条（成功的那条），列表同步。"""
+        if self.queue:
+            self.queue.pop(0)
+            self.lb_queue.delete(0)
+
+    def run_queue(self):
+        """逐条执行队列：成功一条删一条，失败/体检不过即停 → 重跑只跑剩余的。
+        全部执行完且体检通过才出成品。"""
+        if self._check_busy():
+            return
+        pdf = self.input_path()
+        if not pdf:
+            return
+        if not self.queue:
+            messagebox.showwarning("提示", "队列是空的，先加几条指令")
+            return
+        if self.order_body is None:
+            self.log_print("先拆页出表")
+            return
+        self._set_busy(True)
+        total = len(self.queue)
+
+        def worker():
+            try:
+                self.log_print(f"===== 开始逐条执行（共 {total} 条，成功一条删一条）=====")
+                # 先把正在编辑、还没落盘的页收进去（批量指令在其后，同页以批量为准）
+                self._ui_sync(self._collect_current)
+                done, skip = 0, 0
+                for i in range(1, total + 1):
+                    item = self.queue[0]          # 永远取队首，成功即移除
+                    kind, payload = item["kind"], item["payload"]
+                    self.log_print(f"--- 第 {i}/{total} 条 ---")
+                    if kind == "cmd":
+                        buf = io.StringIO()
+                        with contextlib.redirect_stdout(buf):
+                            changed = order_editor.execute(self.order_body, payload, self.work_dir)
+                        out = buf.getvalue().strip()
+                        if out:
+                            self.log_print("   " + out.replace("\n", "\n   "))
+                        if not changed:
+                            skip += 1
+                            self.log_print("   [没生效] 此条被跳过并移出队列")
+                            self._ui_sync(self._queue_pop_head)
+                            order_editor.save_table(self.work_dir / "order.csv",
+                                                    self.order_header, self.order_body)
+                            continue
+                        done += 1
+                    elif kind == "text":
+                        n = self._apply_any_payload(payload)
+                        self._ui_sync(self.refresh_text_list)
+                        if n:
+                            self.log_print(f"   ✔ 批量填字生效 {n} 处")
+                            done += 1
+                        else:
+                            skip += 1
+                            self.log_print("   [没生效] 此条被跳过并移出队列")
+
+                    elif kind == "reverse":
+                        self._do_reverse_on_body()
+                        self.log_print("   ✔ 整本倒序完成")
+                        done += 1
+                    # ★ 成功一条立即从队列移除——中途停下，剩下的天然是"没执行的"
+                    self._ui_sync(self._queue_pop_head)
+                    # 每条执行完立即存盘，中途断了也不丢
+                    order_editor.save_table(self.work_dir / "order.csv",
+                                            self.order_header, self.order_body)
+                    self.write_text_csv()
+                self._ui_sync(self.load_order)
+                self._ui_sync(self.refresh_text_list)
+                self.log_print(f"===== 执行完毕：{done} 条生效，{skip} 条没生效并移除 =====")
+
+                # 体检
+                errors, warns = [], []
+                check(self.work_dir, errors, warns)
+                for w in warns:
+                    self.log_print(f"[提示] {w}")
+                if errors:
+                    for e in errors:
+                        self.log_print(f"[致命] {e}")
+                    self.log_print("表没通过体检，不出成品；修好后重新点执行即可（不会重复已执行的指令）")
+                    def _pop():
+                        messagebox.showerror(
+                            "表格体检没通过",
+                            "\n".join(errors[:5]) + ("\n……" if len(errors) > 5 else "")
+                            + "\n\n修好两张表后重新点执行即可。")
+                    try:
+                        self._ui_sync(_pop)
+                    except Exception:
+                        pass
+                    return
+                self.log_print("✔ 表格体检通过，开始出成品……")
+                final = unique_path(self.final_dir / f"{pdf.stem}_完成.pdf")
+                rebuild(self.work_dir, final, Logger(self.log_dir, name="GUI"))
+                if fitz is not None:
+                    doc = fitz.open(final); n = doc.page_count; doc.close()
+                    self.log_print(f"✔ 成品已生成（{n} 页）：{final}")
+                else:
+                    self.log_print(f"✔ 成品已生成：{final}（未装 PyMuPDF，跳过页数校验）")
+                self.log_print("队列已全部执行完毕并出成品")
+            except Exception as e:
+                self.log_print(f"[致命] {e}")
+                self.log_print("已停下；队列里剩的是没执行的条目，修好后重新点执行即可")
+            finally:
+                self._ui(self._set_busy, False)
+        threading.Thread(target=worker, daemon=True).start()
+
+    # ---------- 换页 ----------
+
+    def load_order(self):
+        opath = self.work_dir / "order.csv"
+        if not opath.exists():
+            return
+        self.order_header, self.order_body = order_editor.load_table(opath)
+        self.lb_order.delete(0, "end")
+        for r in self.order_body:
+            try:
+                new_no, old_no, rf = int(r[0]), int(r[1]), r[2].strip()
+            except (ValueError, IndexError):
+                continue   # 手工改坏了的行，跳过显示，不让整个列表崩掉
+            mark = f"  ←← 图用原第 {rf} 页" if rf else ""
+            moved = "  [改过]" if (new_no != old_no or rf) else ""
+            self.lb_order.insert("end", f"第 {new_no} 位 ← 原第 {old_no} 页{mark}{moved}")
+
+    def exec_cmd(self):
+        if self._check_busy():
+            return
+        cmd = self.e_cmd.get().strip()
+        if not cmd:
+            return
+        if self.order_body is None:
+            self.log_print("先拆页出表，再输口令")
+            return
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            changed = order_editor.execute(self.order_body, cmd, self.work_dir)
+        text = buf.getvalue().strip()
+        if text:
+            self.log_print(text)
+        if changed:
+            order_editor.save_table(self.work_dir / "order.csv",
+                                    self.order_header, self.order_body)
+            self.load_order()
+        self.e_cmd.delete(0, "end")
+
+    def exec_batch_cmd(self):
+        if self._check_busy():
+            return
+        if self.order_body is None:
+            self.log_print("先拆页出表")
+            return
+        lines = [l.strip() for l in self.t_cmd.get("1.0", "end").splitlines() if l.strip()]
+        if not lines:
+            self.log_print("批量口令框是空的")
+            return
+        ok, bad = 0, 0
+        for line in lines:
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf):
+                changed = order_editor.execute(self.order_body, line, self.work_dir)
+            out = buf.getvalue().strip()
+            self.log_print(f"【{line}】")
+            if out:
+                self.log_print("   " + out.replace("\n", "\n   "))
+            ok += 1 if changed else 0
+            bad += 0 if changed else 1
+        if ok:
+            order_editor.save_table(self.work_dir / "order.csv",
+                                    self.order_header, self.order_body)
+            self.load_order()
+        self.log_print(f"✔ 批量执行完：{ok} 条成功，{bad} 条没生效")
+        self.t_cmd.delete("1.0", "end")
+
+    def _do_reverse_on_body(self):
+        """在内存 order_body 上整本倒序（不弹窗不存盘，供队列和按钮共用）。"""
+        n = len(self.order_body)
+        old = [r[1] for r in self.order_body]
+        for i, r in enumerate(self.order_body):
+            r[1] = old[n - 1 - i]
+            r[2] = ""
+
+    # ---------- 插字 ----------
+
+    @staticmethod
+    def _norm_row(r):
+        """把一行补齐/截断到 TEXT_HEADER 的列数，手工改表缺列也不崩。"""
+        r = ["" if c is None else str(c) for c in (r or [])]
+        if len(r) < len(TEXT_HEADER):
+            r += [""] * (len(TEXT_HEADER) - len(r))
+        return r[:len(TEXT_HEADER)]
+
+    def load_text(self):
+        tpath = self.work_dir / "text.csv"
+        if not tpath.exists():
+            self.log_print("text.csv 还没有，先拆页出表")
+            return
+        with open(tpath, encoding="utf-8-sig") as f:
+            rows = list(csv.reader(f))
+        self.text_rows = [self._norm_row(r) for r in rows[1:] if r and str(r[0]).strip()]
+        self.cur_text_i = None
+        self.refresh_text_list()
+        try:
+            m = json.load(open(self.work_dir / "manifest.json", encoding="utf-8"))
+            p0 = next(p for p in m["pages"] if p.get("status") == "已确认")
+            self.page_wh = (p0["width_pt"], p0["height_pt"])
+            self.lbl_wh.config(text=f"页面约 {self.page_wh[0]:.0f}×{self.page_wh[1]:.0f} 点")
+        except Exception:
+            self.page_wh = (0, 0)
+
+    def refresh_text_list(self):
+        self.lb_text.delete(0, "end")
+        for r in self.text_rows:
+            preview = (r[1][:12] + "…") if len(r[1]) > 12 else r[1]
+            mark = " ✔" if r[1].strip() else ""
+            self.lb_text.insert("end", f"第 {r[0]} 页{mark} {preview}")
+
+    def _collect_current(self):
+        if self.cur_text_i is None or self.cur_text_i >= len(self.text_rows):
+            return False
+        r = self.text_rows[self.cur_text_i]
+        r[1] = self.e_text.get()
+        try:
+            r[2] = str(float(self.e_x.get()))
+            r[3] = str(float(self.e_y.get()))
+        except ValueError:
+            pass
+        try:
+            r[4] = str(float(self.cb_size.get() or 12))
+        except ValueError:
+            r[4] = r[4] or "12"
+        c = self.cb_color.get().strip()
+        if c:
+            m = HEX_RE.search(c)
+            r[5] = m.group(0) if m else (r[5] or "#000000")
+        else:
+            r[5] = r[5] or "#000000"
+        r[6] = self.align_var.get()
+        r[7] = self.status_var.get()
+        return True
+
+    def on_pick_page(self, _=None):
+        sel = self.lb_text.curselection()
+        if not sel:
+            return
+        if self._check_busy():          # ★ 执行中禁止切页，防并发写 text.csv
+            return
+        new_i = sel[0]
+        if self.cur_text_i is not None and self.cur_text_i != new_i:
+            if self._collect_current():
+                self.write_text_csv()
+                self.refresh_text_list()
+        self.cur_text_i = new_i
+        r = self.text_rows[new_i]
+        self.e_text.delete(0, "end"); self.e_text.insert(0, r[1])
+        self.e_x.delete(0, "end"); self.e_x.insert(0, r[2])
+        self.e_y.delete(0, "end"); self.e_y.insert(0, r[3])
+        self.cb_size.set(r[4] or "12")
+        disp = next((c for c in COLORS if c.endswith(r[5])), r[5] or "#000000")
+        self.cb_color.set(disp)
+        if r[6]: self.align_var.set(r[6])
+        if r[7]: self.status_var.set(r[7])
+
+    def save_page(self):
+        if self._check_busy():
+            return
+        if self.cur_text_i is None:
+            messagebox.showwarning("提示", "先在左边选一页")
+            return
+        try:
+            x = float(self.e_x.get()); y = float(self.e_y.get())
+        except ValueError:
+            messagebox.showwarning("提示", "x、y 必须是数字")
+            return
+        if self.page_wh[0] and not (0 <= x <= self.page_wh[0] and 0 <= y <= self.page_wh[1]):
+            if not messagebox.askyesno("确认",
+                    f"x/y 超出页面范围（0~{self.page_wh[0]:.0f}, 0~{self.page_wh[1]:.0f}），仍要保存吗？"):
+                return
+        self._collect_current()
+        self.write_text_csv()
+        self.refresh_text_list()
+        self.log_print(f"✔ 第 {self.text_rows[self.cur_text_i][0]} 页的字已保存")
+
+    def clear_page(self):
+        if self._check_busy():
+            return
+        if self.cur_text_i is None:
+            return
+        r = self.text_rows[self.cur_text_i]
+        r[1], r[2], r[3], r[4], r[7] = "", "", "", "", "待审核"
+        self.write_text_csv()
+        self.refresh_text_list()
+        self.on_pick_page()
+
+    def _apply_text_payload(self, raw):
+        """把 （1）xxx（2）xxx 应用到 text_rows，返回填了几页。"""
+        raw = raw.replace("\n", " ")
+        parts = re.split(r"[（(](\d+)[)）]", raw)
+        if parts[0].strip():
+            self.log_print(f"[提示] 开头没页号，忽略：「{parts[0].strip()[:20]}」")
+        pairs = list(zip(parts[1::2], parts[2::2]))
+        if not pairs:
+            self.log_print("[没看懂] 格式示例：（1）封面标题（2）第一章")
+            return 0
+        filled = []
+        for no_s, txt in pairs:
+            pno = int(no_s)
+            pos = self._where_is(pno)
+            if pos and pos != pno:
+                self.log_print(f"[提示]（{pno}）指原第{pno}页，"
+                               f"它现在排在第 {pos} 位——字跟内容页走，不跟位置")
+            # 优先该页空白行，其次该页任意行，最后才新增（页号照抄补零格式）
+            r = next((r for r in self.text_rows
+                      if r[0].strip().lstrip("0") == str(pno) and not r[1].strip()), None)
+            if r is None:
+                r = next((r for r in self.text_rows
+                          if r[0].strip().lstrip("0") == str(pno)), None)
+            if r is None:
+                width = len(self.text_rows[0][0]) \
+                    if self.text_rows and self.text_rows[0][0].strip().isdigit() else 0
+                r = self._norm_row(list(self.text_rows[-1])) if self.text_rows \
+                    else self._norm_row([])
+                r[0] = str(pno).zfill(width) if width else str(pno)
+                r[1] = ""
+                r[2] = ""      # ← 补：清掉从上一行抄来的坐标
+                r[3] = ""      # ← 补
+                r[4] = ""      # ← 补，顺手
+                r[5] = ""
+                self.text_rows.append(r)
+            # 纯照片 PDF 扫不出格子，没坐标就自动给默认位置：
+            # 页面左下角（x=50，底边上方 36 点），插完可用点图定位置微调
+            if not r[2].strip() or not r[3].strip():
+                pw, ph = self._page_size(pno)
+                if not r[2].strip():
+                    r[2] = "50"
+                if not r[3].strip():
+                    r[3] = str(round(ph - 36, 1))
+                self.log_print(f"[提示]（{pno}）没定坐标，按默认位置"
+                               f"（左下角 x=50, y={r[3]}）插入；"
+                               f"可用【点图定位置】微调")
+            r[1] = txt.strip()
+            if not r[4]: r[4] = "12"
+            if not r[5]: r[5] = "#000000"
+            if not r[6]: r[6] = "left"
+            r[7] = "已确认"
+            if pno not in filled:
+                filled.append(pno)
+        self.write_text_csv()
+        filled_set = {str(n) for n in filled}
+        missing = [r[0] for r in self.text_rows
+                   if r[0].strip().lstrip("0") in filled_set and not r[2]]
+        self.log_print(f"✔ 填字完成：{len(filled)} 页（{','.join(map(str, filled))}）")
+        if missing:
+            self.log_print(f"[待办] 这些页还没填坐标：{','.join(missing)}")
+        return len(filled)
+
+    def _where_is(self, pno):
+        """原第 pno 页现在排在第几位（找不到返回 None）。"""
+        for i, r in enumerate(self.order_body):
+            try:
+                content = r[2].strip() if len(r) > 2 and r[2].strip() \
+                          else str(int(r[1]))
+            except (ValueError, IndexError):
+                continue
+            if content.lstrip("0") == str(pno):
+                return i + 1
+        return None
+
+    def _page_size(self, pno):
+        """查原第 pno 页的宽高（点）。查不到就退回全局或 A4。"""
+        try:
+            m = json.load(open(self.work_dir / "manifest.json", encoding="utf-8"))
+            p = next(p for p in m["pages"] if str(p.get("page")) == str(pno))
+            return p["width_pt"], p["height_pt"]
+        except Exception:
+            return self.page_wh if self.page_wh[0] else (595.0, 842.0)
+
+    def _apply_slot_payload(self, raw):
+        """把 （3）R2C2=某某公司（3）R3C2=张三 填进格子，返回填了几格。
+        同页多格 = 同页多行；同一格重复填 = 覆盖，不涨行；页号格式与表内一致。"""
+        spath = self.work_dir / "slots.json"
+        slots_map = {}
+        if spath.exists():
+            try:
+                data = json.load(open(spath, encoding="utf-8"))
+                for pno, lst in data.items():
+                    for s in lst:
+                        slots_map[(int(pno), s["行"], s["列"])] = s
+            except Exception:
+                pass
+        if not slots_map:
+            self.log_print("[没空位] slots.json 里没有空位数据"
+                           "（文件在但为空 = 这个 PDF 没扫出表格，格子口令用不了）")
+            return 0
+        raw = raw.replace("\n", " ")
+        parts = re.split(r"[（(](\d+)[)）]", raw)
+        pairs = list(zip(parts[1::2], parts[2::2]))
+        ok, bad = 0, 0
+        for no_s, body in pairs:
+            m = re.match(r"\s*R(\d+)C(\d+)\s*=\s*(.*)", body)
+            if not m:
+                self.log_print(f"[没看懂] （{no_s}）后面不是 R行C列=文字：「{body[:20]}」")
+                bad += 1
+                continue
+            pno, ri, ci = int(no_s), int(m.group(1)), int(m.group(2))
+            txt = m.group(3).strip()
+            pos = self._where_is(pno)
+            if pos and pos != pno:
+                self.log_print(f"[提示]（{pno}）指原第{pno}页，"
+                               f"它现在排在第 {pos} 位——字跟内容页走，不跟位置")
+            s = slots_map.get((pno, ri, ci))
+            if s is None:
+                self.log_print(f"[没这格] P{pno}R{ri}C{ci} 不在空位表里，跳过")
+                bad += 1
+                continue
+            x0, y0, x1, y1 = s["矩形"]
+            size = s["字号"]
+            y = round(y1 - size * 0.30, 1)
+            # ① 先找"该页同一格"的行（页号+坐标都相同）→ 直接覆盖，防重复涨行
+            def _near(v, target, tol=0.5):
+                try:
+                    return abs(float(v) - target) < tol
+                except (TypeError, ValueError):
+                    return False
+
+            r = next((r for r in self.text_rows
+                      if r[0].strip().lstrip("0") == str(pno)
+                      and _near(r[2], x0) and _near(r[3], y)), None)
+            if r is None:
+                # ② 该格没填过：优先复用该页的空白行
+                r = next((r for r in self.text_rows
+                          if r[0].strip().lstrip("0") == str(pno)
+                          and not r[1].strip()), None)
+                # ③ 真没有才新增，页号照抄表内补零格式（001 而不是 1）
+                if r is None:
+                    width = len(self.text_rows[0][0]) \
+                        if self.text_rows and self.text_rows[0][0].strip().isdigit() else 0
+                    r = self._norm_row(list(self.text_rows[-1])) if self.text_rows \
+                        else self._norm_row([])
+                    r[0] = str(pno).zfill(width) if width else str(pno)
+                    r[1] = ""
+                    r[2] = ""
+                    r[3] = ""
+                    r[4] = ""
+                    r[5] = ""
+                    self.text_rows.append(r)
+            r[1], r[2], r[3], r[4] = txt, str(x0), str(y), str(size)
+            r[5] = r[5] or "#000000"
+            r[6] = "left"
+            r[7] = "已确认"
+            ok += 1
+        self.write_text_csv()
+        self.log_print(f"✔ 格子填字完成：{ok} 格生效，{bad} 格没生效")
+        return ok
+
+    def _apply_any_payload(self, raw):
+        """自动识别：带 R行C列= 的走格子口令，否则走原来的整页填字。"""
+        if re.search(r"[（(]\d+[)）]\s*R\d+C\d+\s*=", raw):
+            return self._apply_slot_payload(raw)
+        return self._apply_text_payload(raw)
+
+
+    def apply_batch_text_now(self):
+        if self._check_busy():
+            return
+        if not self.text_rows:
+            self.log_print("先拆页出表")
+            return
+        raw = self.t_batch.get("1.0", "end").strip()
+        if not raw:
+            self.log_print("批量填字框是空的")
+            return
+        # 先把正在编辑的页收进去，批量内容在其后，同页以批量为准
+        self._collect_current()
+        self._apply_any_payload(raw)
+        self.refresh_text_list()
+        self.t_batch.delete("1.0", "end")
+
+    def write_text_csv(self):
+        if not self.work_dir:
+            return
+        with open(self.work_dir / "text.csv", "w", encoding="utf-8-sig", newline="") as f:
+            w = csv.writer(f)
+            w.writerow(TEXT_HEADER)
+            w.writerows(self.text_rows)
+
+    def view_page_img(self):
+        if self.cur_text_i is None or not self.work_dir:
+            return
+        img = self.work_dir / f"{self.text_rows[self.cur_text_i][0]}.png"
+        if img.exists():
+            self._open_path(img)
+        else:
+            self.log_print("这页的图缺失，看日志")
+
+    def preview_page(self):
+        """弹出这页的预览图：点哪里，x/y 就填哪；红点红字模拟插入效果。"""
+        if self._check_busy():
+            return
+        if self.cur_text_i is None or not self.work_dir:
+            messagebox.showwarning("提示", "先在左边选一页")
+            return
+        self._collect_current()          # 先收当前输入，预览才是最新的
+        r = self.text_rows[self.cur_text_i]
+        img_path = self.work_dir / f"{r[0]}.png"
+        if not img_path.exists():
+            self.log_print("这页的图缺失，先拆页出表")
+            return
+        try:
+            from PIL import Image, ImageTk
+        except ImportError:
+            self.log_print("没装 Pillow，无法预览；pip install pillow")
+            return
+
+        c = self.style.colors
+        img = Image.open(img_path)
+        px_w, px_h = img.size
+        pw, ph = self.page_wh
+        if not pw:                       # manifest 没读到就粗略按 1px=1pt
+            pw, ph = float(px_w), float(px_h)
+        sx, sy = pw / px_w, ph / px_h    # 像素→PDF点 的换算比例
+
+        max_w, max_h = 900, 960
+        k = min(max_w / px_w, max_h / px_h, 1.0)
+        dw, dh = int(px_w * k), int(px_h * k)
+        disp = img.resize((dw, dh))
+
+        win = ttkb.Toplevel(self.win)
+        win.title(f"第 {r[0]} 页 — 点哪里，字落哪里")
+        cv = tk.Canvas(win, width=dw, height=dh,
+                       bg=c.inputbg, highlightthickness=1,
+                       highlightbackground=c.border)
+        cv.pack(padx=10, pady=10)
+        cv.image = ImageTk.PhotoImage(disp)   # 持引用，防图片被回收
+        cv.create_image(0, 0, anchor="nw", image=cv.image)
+        cv.create_text(dw // 2, 16, text="单击图片任意位置 = 字插入那里；改完关窗，点【保存此页】",
+                       fill=c.primary, font=FONT)
+        # ── 画表格空位框（蓝虚线 + 编号角标）──
+        def _load_slots(pno):
+            path = self.work_dir / "slots.json"
+            if not path.exists():
+                return []
+            try:
+                data = json.load(open(path, encoding="utf-8"))
+                return data.get(str(pno), [])
+            except Exception:
+                return []
+
+        slots = _load_slots(int(r[0]) if str(r[0]).strip().isdigit() else -1)
+        for s in slots:
+            x0, y0, x1, y1 = (v / sx * k for v in s["矩形"])
+            cv.create_rectangle(x0, y0, x1, y1,
+                                outline="#1976d2", dash=(4, 3), width=1)
+            cv.create_text(x0 + 2, y0 + 1, anchor="nw", text=s["编码"],
+                           fill="#1976d2", font=("Microsoft YaHei UI", 7))
+        if slots:
+            cv.create_text(dw // 2, 34,
+                           text=f"本页 {len(slots)} 个空位（蓝虚线框）；点框内=自动吸附",
+                           fill="#1976d2", font=FONT)
+
+        marker = []
+        def redraw():
+            nonlocal marker
+            for it in marker:
+                cv.delete(it)
+            marker = []
+            try:
+                fx, fy = float(r[2]), float(r[3])
+            except ValueError:
+                return
+            mx, my = fx / sx * k, fy / sy * k
+            marker.append(cv.create_oval(mx - 4, my - 4, mx + 4, my + 4,
+                                         outline="red", width=2))
+            txt = r[1] or "（这里）"
+            try:
+                fsize = max(int(float(r[4] or 12) * k), 6)
+            except ValueError:
+                fsize = 10
+            marker.append(cv.create_text(mx + 6, my, anchor="w", text=txt[:20],
+                                         fill=r[5] or "#000000",
+                                         font=("SimSun", fsize)))
+
+        def on_click(e):
+            x_pt = e.x / k * sx
+            y_pt = e.y / k * sy
+            # 先看是不是点在了某个空位框里 → 吸附
+            for s in slots:
+                bx0, by0, bx1, by1 = s["矩形"]
+                if bx0 - 2 <= x_pt <= bx1 + 2 and by0 - 2 <= y_pt <= by1 + 2:
+                    r[2] = str(round(bx0, 1))                 # 贴左边框内侧
+                    r[3] = str(round(by1 - s["字号"] * 0.30, 1))  # 基线约在底边上方 0.3 字高
+                    self.cb_size.set(str(s["字号"]))
+                    break
+            else:
+                # 没点中空位，走原来的手点逻辑
+                r[2] = str(round(x_pt, 1))
+                r[3] = str(round(y_pt, 1))
+            self.e_x.delete(0, "end"); self.e_x.insert(0, r[2])
+            self.e_y.delete(0, "end"); self.e_y.insert(0, r[3])
+            redraw()
+        # ↓↓ 补这两行（注意缩进：8 个空格，和 def on_click 平级）↓↓
+        redraw()
+        cv.bind("<Button-1>", on_click)
+
+    # ---------- 拆页 / 其他 ----------
+
+    def do_split(self):
+        if self._check_busy():
+            return
+        pdf = self.input_path()
+        if not pdf:
+            return
+        self._set_busy(True)
+
+        def worker():
+            try:
+                self.ensure_dirs(pdf)
+                slot_scanner.scan_pdf(pdf, self.work_dir / "slots.json", 覆盖=True)
+                self.log_print("✔ 表格空位已扫描 → slots.json")
+                self._ui_sync(self.load_order)
+                self._ui_sync(self.load_text)
+                self.log_print("✔ 拆页完成，两张表已就绪（✔ 拆页完成，空位已重扫 → slots.json）")
+            except Exception as e:
+                self.log_print(f"[致命] {e}")
+            finally:
+                self._ui(self._set_busy, False)
+        threading.Thread(target=worker, daemon=True).start()
+
+    def do_scan_image(self):
+        """照片件专用：图片找线扫表格空位，只填没货的页，不动文字版结果。"""
+        if self._check_busy():
+            return
+        pdf = self.input_path()
+        if not pdf:
+            return
+        self._set_busy(True)
+
+        def worker():
+            try:
+                self.log_print("===== 图片找线开始（只扫没空位的页）=====")
+                新增 = slot_scanner.scan_pdf_image(
+                    pdf, self.work_dir / "slots.json", 报告=self.log_print)
+                if 新增:
+                    self.log_print(f"✔ 完成，{len(新增)} 页新增空位"
+                                   f"（{sum(新增.values())} 格）——格子口令现在可用了")
+                else:
+                    self.log_print("没扫出新的空位：表格可能没有框线，"
+                                   "用【点图定位置】手点更靠谱")
+            except Exception as e:
+                self.log_print(f"[致命] {e}")
+                self.log_print("提示：没装 numpy 的话会很慢，pip install numpy")
+            finally:
+                self._ui(self._set_busy, False)
+        threading.Thread(target=worker, daemon=True).start()
+
+    def open_page_drag(self):
+        if self._check_busy():
+            return
+        if self.order_body is None:
+            self.log_print("先拆页出表，再拖拽排序")
+            return
+        import page_drag
+        page_drag.open_window(self)
+
+    def do_merge(self):
+        if self._check_busy():
+            return
+        if self.order_body is None:
+            self.log_print("先拆页出表，再并入其他 PDF")
+            return
+        from tkinter import filedialog
+        pdf = filedialog.askopenfilename(
+            title="选择要并入的 PDF",
+            filetypes=[("PDF 文件", "*.pdf")])
+        if not pdf:
+            return
+        self._set_busy(True)
+
+        def worker(pdf):
+            try:
+                import merger
+                added = merger.merge_pdf(pdf, self.work_dir,
+                                         self.order_header, self.order_body)
+                self._ui_sync(self.load_order)
+                tail = "、".join(str(x) for x in added[:5])
+                more = "…" if len(added) > 5 else ""
+                self.log_print(f"✔ 已并入 {len(added)} 页（新页号：{tail}{more}），"
+                               f"排在队尾——用拖拽排序挪到想要的位置")
+            except Exception as e:
+                self.log_print(f"[致命] {e}")
+            finally:
+                self._ui(self._set_busy, False)
+        threading.Thread(target=worker, args=(pdf,), daemon=True).start()
+
+    def do_sticker(self):
+        if self._check_busy():
+            return
+        if self.order_body is None:
+            self.log_print("先拆页出表，再贴图")
+            return
+        from tkinter import filedialog, simpledialog
+        img = filedialog.askopenfilename(
+            title="选择要贴的图片",
+            filetypes=[("图片", "*.png *.jpg *.jpeg *.bmp"), ("所有文件", "*.*")])
+        if not img:
+            return
+        s = simpledialog.askstring("贴图", "贴到原第几页？（敲页号，如 3）",
+                                   parent=self.win)
+        if not s or not s.strip().isdigit():
+            return
+        pno = int(s)
+        if not (self.work_dir / f"{pno:03d}.png").exists():
+            self.log_print(f"[贴图] 没有原第{pno}页（页号范围看表格面板）")
+            return
+        import sticker
+        sticker.add_sticker(self.work_dir, pno, img)
+        self.log_print(f"✔ 图片已贴到原第{pno}页（默认居中、30%宽）"
+                       f"——弹出调整窗，拖动挪位置、滚轮缩放")
+        sticker.open_editor(self, pno)
+
+    def open_work(self):
+        if self.work_dir and self.work_dir.exists():
+            self._open_path(self.work_dir)
+        else:
+            self.log_print("还没有工作文件，先拆页出表")
+
+    def run(self):
+        if self._check_busy():
+            return
+        inp = self.e_in.get().strip()
+        if not inp:
+            messagebox.showwarning("提示", "请先选择输入文件"); return
+        params = {"input_file": inp, "output_dir": self.e_out.get().strip() or None}
+        mode = self.modes[self.mode_var.get()]
+        self._set_busy(True)
+
+        def worker():
+            try:
+                mode.run(params, log_print=self.log_print)
+            except Exception as e:
+                self.log_print(f"[致命] {e}")
+            finally:
+                self._ui(self._set_busy, False)
+        threading.Thread(target=worker, daemon=True).start()
+
+    def open_dir(self):
+        out = self.e_out.get().strip()
+        if out:
+            self._open_path(out)
+            return
+        inp = self.e_in.get().strip()
+        if inp:
+            self._open_path(Path(inp).parent)
+        else:
+            self.log_print("还没选输出目录或输入文件")
+
+    def help(self):
+        # 优先用户说明书，缺了降级到开发约定；末尾附 AI 口令模板
+        doc = PROJECT_ROOT / "docs" / "使用说明.txt"
+        if not doc.exists():
+            doc = PROJECT_ROOT / "docs" / "约定总纲.txt"
+        try:
+            txt = doc.read_text(encoding="utf-8")
+        except UnicodeDecodeError:
+            txt = doc.read_text(encoding="gbk")
+        except FileNotFoundError:
+            txt = "帮助文档缺失（docs/使用说明.txt）"
+
+        # 追加 AI 口令模板（叫法可能不同，按候选挨个找）
+        模板 = None
+        for name in ("AI口令模板.txt", "AI模板.txt", "口令模板.txt"):
+            for 目录 in (PROJECT_ROOT / "docs", PROJECT_ROOT):
+                p = 目录 / name
+                if p.exists():
+                    模板 = p
+                    break
+            if 模板:
+                break
+        if 模板:
+            try:
+                t_txt = 模板.read_text(encoding="utf-8")
+            except UnicodeDecodeError:
+                t_txt = 模板.read_text(encoding="gbk")
+            txt += "\n\n" + "━" * 28 + "\n  AI 口令模板（复制给 AI 用，也可单独取用）\n" \
+                   + "━" * 28 + "\n" + t_txt
+
+        win = ttkb.Toplevel(self.win)
+        win.title("Help")
+        win.geometry("680x540")
+        frame, t = self._scrolled_text(win, wrap="word")
+        frame.pack(fill="both", expand=True, padx=10, pady=10)
+        t.insert("end", txt)
+        t.configure(state="disabled")   # 只读
+
+    def run_gui(self):
+        self.win.mainloop()
+
+def run_gui(modes):
+    App(modes).run_gui()
+
+============================================================
+【文件】launcher.py  (755 字节, 28 行, 编码=utf-8, 缩进=4空格, 语法✔)
+来源: D:\压缩\开发中\launcher.py
+============================================================
+# -*- coding: utf-8 -*-
+"""打包入口：启动失败时把错误写到 exe 旁的 崩溃日志.txt，方便远程排障。"""
+import sys, traceback
+from pathlib import Path
+
+def _crash_log():
+    try:
+        base = Path(sys.executable).parent if getattr(sys, "frozen", False) \
+            else Path(__file__).parent
+        with open(base / "崩溃日志.txt", "w", encoding="utf-8") as f:
+            f.write(traceback.format_exc())
+    except Exception:
+        pass
+
+try:
+    from main import discover_modes
+except Exception:
+    def discover_modes():
+        import modes.mode_rebuild as m
+        return {"rebuild": m}
+
+try:
+    import gui
+    gui.run_gui(discover_modes())
+except Exception:
+    _crash_log()
+    raise
+
+============================================================
+【文件】main.py  (3000 字节, 77 行, 编码=utf-8, 缩进=4空格, 语法✔)
+来源: D:\压缩\开发中\main.py
+============================================================
+# -*- coding: utf-8 -*-
+"""入口：分发到 CLI / GUI / 开发者模式。模式由 modes/ 自动发现。"""
+import sys
+import json
+import importlib
+from pathlib import Path
+
+PROJECT_ROOT = Path(__file__).resolve().parent
+
+def discover_modes():
+    """扫描 modes/ 自动注册，加模式 = 加文件，不改本文件。
+    打包版没有 .py 文件，靠 build.bat 的 --collect-submodules 把模块编译进去，
+    这里按文件名兜底。"""
+    modes = {}
+    files = sorted((PROJECT_ROOT / "modes").glob("mode_*.py"))
+    names = [f.stem for f in files]
+    if not names and getattr(sys, "frozen", False):
+        names = ["mode_rebuild"]
+    for stem in names:
+        try:
+            mod = importlib.import_module(f"modes.{stem}")
+        except Exception as e:
+            try:
+                from pathlib import Path as _P
+                import sys as _s
+                base = _P(getattr(_s, "executable", __file__)).parent
+                with open(base / "模式加载日志.txt", "w", encoding="utf-8") as _f:
+                    _f.write(f"{stem}: {e}")
+            except Exception:
+                pass
+            continue
+        if hasattr(mod, "run"):
+            modes[stem.replace("mode_", "")] = mod
+    return modes
+def dev_mode():
+    """开发者模式：打印当前约定摘要，防止遗忘。"""
+    try:
+        cfg = json.load(open(PROJECT_ROOT / "config.json", encoding="utf-8"))
+    except Exception as e:
+        print(f"[致命] 读不了 config.json：{e}")
+        print("请检查项目根目录下是否存在 config.json，且 JSON 语法正确。")
+        return
+    modes = discover_modes()
+    print("=" * 50)
+    print("【开发者模式】当前约定摘要")
+    print(f"  脚本版本: {cfg['version']}  manifest版本: {cfg['manifest_schema_version']}")
+    print(f"  渲染 DPI: {cfg['render_dpi']}（坐标统一 PDF 点）")
+    print(f"  字体: {cfg['font_path'] or '内置 ' + cfg['font_fallback']}")
+    print(f"  输出三分: 最终文件 / 工作文件 / 日志")
+    print(f"  已注册模式: {', '.join(modes) or '无'}")
+    print(f"  原则: 原文件只读 | 异常分级 | 永不默认覆盖")
+    print(f"  详细约定见 docs/ 约定总纲.txt")
+    print("=" * 50)
+
+def main():
+    args = sys.argv[1:]
+    if "--dev" in args:
+        dev_mode()
+        if len(args) == 1:
+            return
+        args.remove("--dev")
+
+    modes = discover_modes()
+    if "--cli" in args:
+        i = args.index("--cli")
+        input_file = args[i + 1] if len(args) > i + 1 else None
+        if not input_file:
+            print("用法: python main.py --cli 输入文件.pdf [输出目录]")
+            return
+        out = args[i + 2] if len(args) > i + 2 else None
+        modes["rebuild"].run({"input_file": input_file, "output_dir": out})
+    else:
+        from gui import run_gui
+        run_gui(modes)
+
+if __name__ == "__main__":
+    main()
+============================================================
+【文件】merger.py  (3364 字节, 86 行, 编码=utf-8, 缩进=4空格, 语法✔)
+来源: D:\压缩\开发中\merger.py
+============================================================
+# -*- coding: utf-8 -*-
+"""并入另一个 PDF：渲染缩略图 + 扫空位 + 队尾追加 order.csv。
+新页从现有最大页号之后续编，统一排在队尾（用拖拽排序调整位置）。
+"""
+
+import json
+import tempfile
+from pathlib import Path
+
+import fitz
+
+import order_editor
+import slot_scanner
+
+
+def merge_pdf(pdf_path: str, work_dir: Path, header, body):
+    """把 pdf_path 的所有页并入工作区。body 原地修改并写回 order.csv。"""
+    src = fitz.open(pdf_path)
+    if len(src) == 0:
+        raise ValueError("对方 PDF 一页都没有")
+
+    # ① 续编页号：接在现有最大号后
+    used = []
+    for r in body:
+        try:
+            used.append(int(r[1]))
+        except (ValueError, IndexError):
+            pass
+    nxt = (max(used) if used else 0) + 1
+
+    # ② 渲染缩略图 PNG（和拆页同款：三位编号.png）
+    from core.common import load_config
+    dpi = load_config()["render_dpi"]
+    for i, page in enumerate(src):
+        pix = page.get_pixmap(dpi=dpi)
+        pix.save(work_dir / f"{nxt + i:03d}.png")
+
+    # ②.5 同步 manifest.json：体检靠它算总页数，重建靠它找页面
+    # （独立成段，只追加一次；放进渲染循环会导致每渲染一页追加全部新页）
+    manifest_path = work_dir / "manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    for i, page in enumerate(src):
+        manifest["pages"].append({
+            "no": f"{nxt + i:03d}",
+            "source": str(pdf_path),
+            "page": nxt + i,
+            "type": "页面图像",
+            "width_pt": round(page.rect.width, 2),
+            "height_pt": round(page.rect.height, 2),
+            "rotation": page.rotation,
+            "dpi": dpi,
+            "image": f"{nxt + i:03d}.png",
+            "status": "已确认",
+        })
+    manifest_path.write_text(
+        json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    # ③ 扫新 PDF 的空位到临时文件，再并进 slots.json
+    slots_path = work_dir / "slots.json"
+    with tempfile.TemporaryDirectory() as td:
+        tmp = Path(td) / "slots.json"
+        slot_scanner.scan_pdf(pdf_path, tmp)
+        new_slots = json.loads(tmp.read_text(encoding="utf-8"))
+    old_slots = {}
+    if slots_path.exists():
+        old_slots = json.loads(slots_path.read_text(encoding="utf-8"))
+    for i in range(len(src)):
+        # 新页在 slots 里的键 = 它在对方 PDF 里的页号（1 起）
+        page_slots = []
+        for s in new_slots.get(str(i + 1), []):
+            s = dict(s)                          # 别改原对象
+            s["页"] = nxt + i                    # 页号改成新 PDF 的
+            s["编码"] = f"P{nxt + i}R{s['行']}C{s['列']}"   # 编码同步
+            page_slots.append(s)
+        old_slots[str(nxt + i)] = page_slots
+    slots_path.write_text(json.dumps(old_slots, ensure_ascii=False, indent=1),
+                          encoding="utf-8")
+
+    # ④ 队尾追加 order 行，写回 order.csv
+    added = []
+    for i in range(len(src)):
+        row = [f"{nxt + i:03d}", str(nxt + i), ""]
+        body.append(row)
+        added.append(nxt + i)
+    order_editor.save_table(work_dir / "order.csv", header, body)
+    return added
+============================================================
+【文件】modes\__init__.py  (0 字节, 1 行, 编码=utf-8, 缩进=无缩进, 语法✔)
+来源: D:\压缩\开发中\modes\__init__.py
+============================================================
+
+============================================================
+【文件】modes\mode_rebuild.py  (1300 字节, 31 行, 编码=utf-8, 缩进=4空格, 语法✔)
+来源: D:\压缩\开发中\modes\mode_rebuild.py
+============================================================
+# -*- coding: utf-8 -*-
+"""模式：重建（重排 + 替换 + 插字）。守接口三规矩：参数进、规范出、写日志收尾。"""
+from pathlib import Path
+from core.common import ensure_output_dir, unique_path, Logger, FatalError
+from core.splitter import split_pdf
+from core.rebuilder import rebuild
+
+def run(params, log_print=print):
+    input_file = Path(params["input_file"])
+    if not input_file.exists():
+        raise FatalError(f"输入文件不存在: {input_file}")
+
+    final_dir, work_dir, log_dir = ensure_output_dir(
+        params.get("output_dir"), input_file, task_name="重建插字")
+    logger = Logger(log_dir)
+    logger.info(f"工作目录: {work_dir}")
+    log_print(f"工作目录: {work_dir}")
+
+    # 1. 拆页
+    logger.info(f"输入: {input_file}")
+    split_pdf(input_file, work_dir, logger)
+    log_print("拆页完成，请审核 工作文件/text.csv（插字）和 order.csv（换页）后再运行。")
+
+    # 2. 一步重建：重排 + 替换 + 插字
+    final = unique_path(final_dir / f"{input_file.stem}_完成.pdf")
+    rebuild(work_dir, final, logger)
+
+    logger.info(f"=== 完成。最终文件: {final} ===")
+    log_print(f"完成！输出目录: {final_dir}")
+    return {"final": final, "work_dir": work_dir}
+
+============================================================
+【文件】order_editor.py  (9625 字节, 274 行, 编码=utf-8, 缩进=4空格, 语法✔)
+来源: D:\压缩\开发中\order_editor.py
+============================================================
+# -*- coding: utf-8 -*-
+"""换页助手：用户说口令（2换3 / 2替3），程序直接改 order.csv，不碰记事本。"""
+import sys
+import re
+import csv
+import json
+from pathlib import Path
+
+from core.common import ensure_output_dir, unique_path, Logger, FatalError
+from core.splitter import split_pdf
+from core.rebuilder import rebuild
+from check_tables import check
+
+TASK = "重建插字"
+
+# ---------- 读写 order.csv ----------
+
+def load_table(path):
+    with open(path, encoding="utf-8-sig") as f:
+        rows = list(csv.reader(f))
+    return rows[0], rows[1:]          # 表头，数据行
+
+def save_table(path, header, body):
+    with open(path, "w", encoding="utf-8-sig", newline="") as f:
+        w = csv.writer(f)
+        w.writerow(header)
+        w.writerows(body)
+
+def find_row(body, new_no):
+    for r in body:
+        try:
+            if int(r[0]) == new_no:
+                return r
+        except (ValueError, IndexError):
+            continue
+    return None
+
+# ---------- 显示 ----------
+
+def show(body):
+    total = len(body)
+    print("\n   当前页序：")
+    for r in body:
+        new_no, old_no, rf = int(r[0]), int(r[1]), r[2].strip()
+        mark = f"  ←← 图用的是原第 {rf} 页" if rf else ""
+        moved = "" if new_no == old_no and not rf else "  [改过]"
+        print(f"   第 {new_no} 位 ← 原第 {old_no} 页{mark}{moved}")
+    print()
+
+# ---------- 口令解析与执行 ----------
+
+def do_swap(body, a, b):
+    """a换b：两个位置的页对调。"""
+    ra, rb = find_row(body, a), find_row(body, b)
+    if ra is None or rb is None:
+        print(f"  [没这页] 总共 {len(body)} 页，{a} 或 {b} 超范围了")
+        return False
+    ra[1], rb[1] = rb[1], ra[1]
+    ra[2], rb[2] = rb[2], ra[2]
+    print(f"  ✔ 完成：第 {a} 位和第 {b} 位的页已对调")
+    return True
+
+def do_replace(body, a, b):
+    """a替b：第 a 位的图换成原第 b 页的图（字也跟着）。"""
+    total = len(body)
+    ra = find_row(body, a)
+    if ra is None or not 1 <= b <= total:
+        print(f"  [没这页] 总共 {total} 页，{a} 或 {b} 超范围了")
+        return False
+    ra[2] = str(b)
+    print(f"  ✔ 完成：第 {a} 位的图已换成原第 {b} 页的（字也用 {b} 页的）")
+    return True
+
+def do_cancel(body, a):
+    """取消某位的强行换图。"""
+    ra = find_row(body, a)
+    if ra is None:
+        print(f"  [没这页] {a} 超范围了")
+        return False
+    ra[2] = ""
+    print(f"  ✔ 完成：第 {a} 位的换图已取消，恢复用自己原页的图")
+    return True
+
+def do_reset(body):
+    for r in body:
+        r[1], r[2] = r[0], ""
+    print("  ✔ 完成：全部恢复原始页序，换图清空")
+    return True
+def do_delete(body, a, b=None):
+    """删a / 删a-b：删掉位置，后面的页依次顶上来。"""
+    nos = set()
+    for r in body:
+        try:
+            nos.add(int(r[0]))
+        except ValueError:
+            pass
+    if b is None:
+        targets = [a] if a in nos else []
+    else:
+        lo, hi = min(a, b), max(a, b)
+        targets = [n for n in range(lo, hi + 1) if n in nos]
+    if not targets:
+        print(f" [没这页] 要删的页不在当前页序里：{a}" if b is None else f" [没这页] {a}-{b} 里没有可删的页")
+        return False
+    tset = set(targets)
+    body[:] = [r for r in body if int(r[0]) not in tset]
+    for i, r in enumerate(body, 1):
+        r[0] = f"{i:03d}"
+    if b is None:
+        print(f" ✔ 已删除第 {a} 位，共 {len(body)} 页（后面依次顶上来）")
+    else:
+        print(f" ✔ 已删除 {len(targets)} 位（{targets[0]}-{targets[-1]}），共 {len(body)} 页")
+    return True
+
+def do_blank(body, a):
+    """空a：第 a 位原地变空白页（页数不变，old_no 记 0）。"""
+    ra = find_row(body, a)
+    if ra is None:
+        print(f" [没这页] {a} 超范围了")
+        return False
+    ra[1] = "0"
+    ra[2] = ""
+    print(f" ✔ 第 {a} 位已改为空白页（页数不变）")
+    return True
+
+def do_restore(body, work_dir):
+    """恢复：优先从 origin.csv 快照还原（删掉的页也回来）；没快照退回旧逻辑。"""
+    if work_dir is not None:
+        o = Path(work_dir) / "origin.csv"
+        if o.exists():
+            _, body0 = load_table(o)
+            body[:] = body0
+            print(" ✔ 已恢复到原始页序（删除过的页也回来了）")
+            return True
+        print(" [提示] 没找到快照 origin.csv，只还原页序，删掉的页找不回来")
+    return do_reset(body)
+
+def _ensure_origin(work_dir):
+    """第一次删/空前，把盘上的 order.csv 存成快照（老任务没有 origin.csv 的兜底）。"""
+    if work_dir is None:
+        return
+    o = Path(work_dir) / "origin.csv"
+    src = Path(work_dir) / "order.csv"
+    if not o.exists() and src.exists():
+        o.write_text(src.read_text(encoding="utf-8-sig"), encoding="utf-8-sig")
+
+def execute(body, cmd, work_dir=None):
+    """解析一条口令。返回 True 表示表被改了。"""
+    cmd = cmd.replace(" ", "").replace("，", "").replace(",", "")
+    if not cmd:
+        return False
+
+    # 删a / 删a-b
+    m = re.fullmatch(r"删(\d+)(?:-(\d+))?", cmd)
+    if m:
+        _ensure_origin(work_dir)
+        if m.group(2):
+            return do_delete(body, int(m.group(1)), int(m.group(2)))
+        return do_delete(body, int(m.group(1)))
+
+    # 空a
+    m = re.fullmatch(r"空(\d+)", cmd)
+    if m:
+        _ensure_origin(work_dir)
+        return do_blank(body, int(m.group(1)))
+
+    # a复制b（与 a替b 同义）
+    m = re.fullmatch(r"(\d+)复制(\d+)", cmd)
+    if m:
+        return do_replace(body, int(m.group(1)), int(m.group(2)))
+
+    # a换b / a替b / 取消a
+    for word, fn in (("换", do_swap), ("替", do_replace), ("取消", do_cancel)):
+        if word == "取消":
+            m = re.fullmatch(r"取消(\d+)", cmd)
+            if m:
+                return fn(body, int(m.group(1)))
+        else:
+            m = re.fullmatch(r"(\d+)" + word + r"(\d+)", cmd)
+            if m:
+                return fn(body, int(m.group(1)), int(m.group(2)))
+
+    if cmd in ("恢复", "重置", "还原"):
+        return do_restore(body, work_dir)
+    if cmd in ("看", "显示", "查看"):
+        show(body)
+        return False
+
+    print(" [没看懂] 口令写法示例：")
+    print(" 2换3 → 第2、3位对调")
+    print(" 2替5 → 第2位的图换成原第5页的")
+    print(" 取消2 → 取消第2位的换图")
+    print(" 删3 → 删掉第3位（后面顶上来，成品变薄）")
+    print(" 删2-4 → 范围删除")
+    print(" 空3 → 第3位变空白页（页数不变）")
+    print(" 恢复 → 回到原始页序（删掉的页也回来）")
+    print(" 看 → 看当前页序")
+    return False
+
+# ---------- 主流程 ----------
+
+def main():
+    print("=" * 40)
+    print("  换页助手（说口令就行，不用碰表格）")
+    print("=" * 40)
+
+    if len(sys.argv) > 1:
+        p = Path(sys.argv[1])
+        if not (p.exists() and p.suffix.lower() == ".pdf"):
+            raise FatalError(f"不是有效的 PDF：{p}")
+    else:
+        print("把 PDF 拖到本窗口，回车：")
+        p = Path(input("> ").strip().strip('"'))
+        if not (p.exists() and p.suffix.lower() == ".pdf"):
+            raise FatalError(f"输入文件不存在或不是 PDF：{p}")
+
+    final_dir, work_dir, log_dir = ensure_output_dir(None, p, task_name=TASK)
+    logger = Logger(log_dir, name="换页助手")
+
+    # 没拆过页就先拆
+    order_csv = work_dir / "order.csv"
+    if not order_csv.exists():
+        print("\n还没拆过页，先自动拆一次……")
+        split_pdf(p, work_dir, logger)
+
+    header, body = load_table(order_csv)
+    show(body)
+
+    changed = False
+    print("输口令改页序（2换3 / 2替5 / 取消2 / 恢复 / 看），输 完成 收工：")
+    while True:
+        cmd = input("  > ").strip()
+        if cmd in ("完成", "完", "退出", "q"):
+            break
+        if execute(body, cmd, work_dir):
+            changed = True
+            save_table(order_csv, header, body)   # 每次改动立即存盘
+            show(body)
+
+    if not changed:
+        print("\n没做任何改动，收工。")
+        input("按回车关闭……")
+        return
+
+    # 出成品前先体检
+    errors, warns = [], []
+    check(work_dir, errors, warns)
+    if errors:
+        for e in errors:
+            print(f"  [致命] {e}")
+        print("表没改好，这次不出成品，改完口令再来。")
+        input("按回车关闭……")
+        return
+    print("  ✔ 表格体检通过")
+
+    ans = input("\n现在就出成品 PDF 吗？（回车=出，输 n=先不出）：").strip().lower()
+    if ans != "n":
+        final = unique_path(final_dir / f"{p.stem}_完成.pdf")
+        rebuild(work_dir, final, logger)
+        print(f"\n✔ 成品在：\n  {final}")
+
+    logger.info("=== 换页助手结束 ===")
+    input("\n按回车关闭……")
+
+if __name__ == "__main__":
+    try:
+        main()
+    except FatalError as e:
+        print(f"\n[致命] {e}")
+        input("按回车关闭……")
+    except Exception as e:
+        print(f"\n[致命] 出错了：{e}")
+        print("完整报错见 日志/换页助手.log，把上面这行抄下来求助。")
+        input("按回车关闭……")
+============================================================
+【文件】page_drag.py  (9702 字节, 239 行, 编码=utf-8, 缩进=4空格, 语法✔)
+来源: D:\压缩\开发中\page_drag.py
+============================================================
+# -*- coding: utf-8 -*-
+"""页面拖拽排序：缩略图网格，拖动换位、单击选中、删页/变空白，实时写回 order.csv。
+缩略图直接用 工作文件 里拆页生成的 PNG（不重复渲染）。
+"""
+
+import tkinter as tk
+import ttkbootstrap as ttk
+from PIL import Image, ImageTk
+
+CELL_W, CELL_H = 132, 186
+TH_W = 116
+
+
+class PageDragWindow:
+    def __init__(self, app):
+        self.app = app
+        self.work_dir = app.work_dir
+        # 从 order_body 读当前页序（内容跟随：有替就用替的图）
+        self.pages = []
+        for r in app.order_body:
+            try:
+                old = int(r[1])
+                rf = (r[2].strip() if len(r) > 2 else "")
+            except (ValueError, IndexError):
+                continue
+            self.pages.append({"old": old, "rf": rf})
+
+        self.sel = None      # 选中的位置（0 基）
+        self.press = None    # (位置, x, y)
+        self.drag_i = None
+        self.photos = []     # 兼容旧引用，不再用于防回收
+        self._cache = {}     # 缩略图缓存：路径 -> PhotoImage / "missing"
+        self._cfg_job = None # Configure 防抖句柄
+        self.win = tk.Toplevel(app.win)
+        self.win.title("页面拖拽排序（拖动换位，改动实时保存）")
+        self.win.geometry("1020x720")
+
+        bar = ttk.Frame(self.win)
+        bar.pack(fill="x", padx=8, pady=6)
+        ttk.Button(bar, text="删除选中页", bootstyle="danger outline",
+                   command=self.del_sel).pack(side="left", padx=3)
+        ttk.Button(bar, text="选中页变空白", bootstyle="secondary outline",
+                   command=self.blank_sel).pack(side="left", padx=3)
+        ttk.Button(bar, text="关 闭", bootstyle="primary",
+                   command=self.close).pack(side="right", padx=3)
+        ttk.Label(bar, text="拖动缩略图换位置；单击选中（红框）；改动实时写回 order.csv"
+                  ).pack(side="left", padx=12)
+
+        self.canvas = tk.Canvas(self.win, bg="#f2f2f2", highlightthickness=0)
+        self.canvas.pack(fill="both", expand=True)
+        self.canvas.bind("<Button-1>", self.on_press)
+        self.canvas.bind("<B1-Motion>", self.on_motion)
+        self.canvas.bind("<ButtonRelease-1>", self.on_release)
+        self.canvas.bind("<Configure>", self._on_resize)
+        self.canvas.bind_all("<MouseWheel>", self.on_wheel)
+        self.win.protocol("WM_DELETE_WINDOW", self.close)
+        self.redraw()
+
+    # ---------- 布局换算 ----------
+    def _on_resize(self, e=None):
+        """Configure 防抖：150ms 内的连续触发合并成一次重绘。"""
+        if self._cfg_job:
+            return
+        self._cfg_job = self.win.after(150, self._do_redraw)
+
+    def _do_redraw(self):
+        self._cfg_job = None
+        try:
+            self.redraw()
+        except tk.TclError:
+            pass          # 窗口已关，忽略
+
+    def _cols(self):
+        w = max(self.canvas.winfo_width(), 1)
+        return max(1, w // CELL_W)
+
+    def _pos(self, i):
+        cols = self._cols()
+        return (i % cols) * CELL_W + 6, (i // cols) * CELL_H + 6
+
+    def _index_at(self, x, y):
+        cols = self._cols()
+        i = (y // CELL_H) * cols + (x // CELL_W)
+        return i if 0 <= i < len(self.pages) else None
+
+    def _target(self, x, y):
+        """落点 = 插到哪一格的前面/后面（按指针在该格左半还是右半）。"""
+        cols = self._cols()
+        col, row = x // CELL_W, y // CELL_H
+        t = row * cols + col + (1 if (x % CELL_W) > CELL_W // 2 else 0)
+        return max(0, min(t, len(self.pages)))
+
+    def _thumb(self, src):
+        """src=0 是空白页；文件缺失返回 'missing'。结果进 _cache。"""
+        if src in (0, "0"):
+            return None
+        p = self.work_dir / f"{int(src):03d}.png"
+        if not p.exists():
+            return "missing"
+        key = str(p)
+        if key in self._cache:
+            return self._cache[key]
+        img = Image.open(p)
+        k = TH_W / img.width
+        img = img.resize((TH_W, max(1, int(img.height * k))))
+        ph = ImageTk.PhotoImage(img)
+        self._cache[key] = ph
+        return ph
+
+    # ---------- 绘制 ----------
+    def redraw(self):
+        self.canvas.delete("all")
+        for i, p in enumerate(self.pages):
+            x, y = self._pos(i)
+            ph = self._thumb(p["rf"] if p["rf"] else p["old"])
+            if ph is None:
+                self.canvas.create_rectangle(x, y, x + TH_W, y + 150,
+                                             fill="#d9d9d9", outline="#aaaaaa")
+                self.canvas.create_text(x + TH_W // 2, y + 75, text="空白页",
+                                        fill="#888888")
+            elif ph == "missing":
+                self.canvas.create_rectangle(x, y, x + TH_W, y + 150,
+                                             fill="#f5d7d7", outline="#cc8888")
+                self.canvas.create_text(x + TH_W // 2, y + 75,
+                                        text=f"缺图(原{p['old']}页)",
+                                        fill="#aa3333", font=("", 8))
+            else:
+                self.canvas.create_image(x, y, anchor="nw", image=ph)
+            outline = "#e53935" if self.sel == i else "#bbbbbb"
+            self.canvas.create_rectangle(x, y, x + TH_W, y + 152,
+                                         outline=outline, width=2)
+            mark = f" ←原{p['rf']}页" if p["rf"] else ""
+            self.canvas.create_text(x + 2, y + 155, anchor="nw",
+                                    text=f"第{i+1}位 ← 原{p['old']}页{mark}",
+                                    font=("Microsoft YaHei UI", 8))
+        cols = self._cols()
+        rows = (len(self.pages) + cols - 1) // cols + 1
+        self.canvas.configure(scrollregion=(0, 0, cols * CELL_W, rows * CELL_H))
+
+    # ---------- 拖拽 ----------
+    def on_press(self, e):
+        self.press = (self._index_at(e.x, e.y), e.x, e.y)
+        self.drag_i = None
+        self.copying = bool(e.state & 0x0004)   # Ctrl 按住 = 复制模式
+
+    def on_motion(self, e):
+        if self.press is None:
+            return
+        i0, x0, y0 = self.press
+        if abs(e.x - x0) + abs(e.y - y0) < 8:
+            return
+        self.drag_i = i0
+        self.canvas.delete("ind")
+        t = self._target(e.x, e.y)
+        px, py = (self._pos(len(self.pages) - 1)[0] + CELL_W - 8,
+                  self._pos(len(self.pages) - 1)[1]) if t >= len(self.pages) \
+                 else self._pos(t)
+        self.canvas.create_line(px, py + 4, px, py + CELL_H - 8,
+                                fill="#e53935", width=3, tags="ind")
+
+    def on_release(self, e):
+        self.canvas.delete("ind")
+        i0 = self.press[0] if self.press else None
+        self.press = None
+        if self.drag_i is not None:
+            if self.copying:
+                tgt = self._index_at(e.x, e.y)
+                self.drag_i = None
+                if tgt is not None and tgt != i0:
+                    src = self.pages[i0]
+                    content = src["rf"] if src["rf"] else src["old"]
+                    if content in (0, "0"):
+                        self.app.log_print("[拖拽排序] 空白页没法复制")
+                    else:
+                        self.pages[tgt]["rf"] = str(content)
+                        self.sel = None
+                        self.save(f"第{tgt+1}位已复制原第{content}页（原内容被覆盖）")
+                        self.redraw()
+                return
+            t = self._target(e.x, e.y)
+            if t > i0:
+                t -= 1
+            if t != i0:
+                self.pages.insert(t, self.pages.pop(i0))
+                self.sel = None
+                self.save("页序已调整")
+            self.drag_i = None
+            self.redraw()
+            return
+        if i0 is not None:
+            self.sel = None if self.sel == i0 else i0
+            self.redraw()
+
+    def on_wheel(self, e):
+        self.canvas.yview_scroll(-int(e.delta / 120), "units")
+
+    # ---------- 删页 / 空白 ----------
+    def del_sel(self):
+        if self.sel is None:
+            return
+        del self.pages[self.sel]
+        self.sel = None
+        self.save("已删除 1 页")
+        self.redraw()
+
+    def blank_sel(self):
+        if self.sel is None:
+            return
+        self.pages[self.sel]["old"] = 0
+        self.pages[self.sel]["rf"] = ""
+        self.save("已改为空白页")
+        self.redraw()
+
+    # ---------- 保存：写回 order.csv（new_no 自动 1..N 连续） ----------
+    def save(self, msg):
+        import order_editor
+        body = [[f"{i:03d}", str(p["old"]), p["rf"]]
+                for i, p in enumerate(self.pages, 1)]
+        self.app.order_body[:] = body
+        order_editor.save_table(self.work_dir / "order.csv",
+                                self.app.order_header, self.app.order_body)
+        self.app.load_order()
+        self.app.log_print(f"[拖拽排序] {msg}（现在共 {len(body)} 位）")
+
+    def close(self):
+        # 把全局滚轮还回主窗口
+        try:
+            c = getattr(self.app.sf, "canvas", None)
+            if c is not None:
+                c.bind_all("<MouseWheel>",
+                           lambda e: c.yview_scroll(-int(e.delta / 120), "units"))
+        except Exception:
+            pass
+        self.win.destroy()
+
+
+def open_window(app):
+    PageDragWindow(app)
+
+============================================================
+【文件】requirements.txt  (59 字节, 5 行, 编码=utf-8, 缩进=无缩进)
+来源: D:\压缩\开发中\requirements.txt
+============================================================
+ttkbootstrap>=2.2
+PyMuPDF>=1.24.0
+Pillow>=10.0.0
+numpy
+
+============================================================
+【文件】run_task.py  (4884 字节, 119 行, 编码=utf-8, 缩进=4空格, 语法✔)
+来源: D:\压缩\开发中\run_task.py
+============================================================
+# -*- coding: utf-8 -*-
+"""一键流程：执行总纲的每一步，并在每步之后自动体检，确认干成了没有。"""
+import sys
+import json
+import fitz
+from pathlib import Path
+
+from core.common import ensure_output_dir, unique_path, Logger, FatalError
+from core.splitter import split_pdf
+from core.rebuilder import rebuild
+from check_tables import check
+
+TASK = "重建插字"
+
+def report(work_dir, 标题):
+    """体检并打印结果。有致命错误就停下，不让坏表流进下一步。"""
+    errors, warns = [], []
+    check(work_dir, errors, warns)
+    print(f"\n----- 自动体检（{标题}）-----")
+    for w in warns:
+        print(f"  [提示] {w}")
+    for e in errors:
+        print(f"  [致命] {e}")
+    if errors:
+        raise FatalError(f"{标题}没通过体检（共 {len(errors)} 个问题），按上面提示改表")
+    print("  ✔ 体检通过")
+
+def verify_pdf(final_pdf, work_dir, 标题):
+    """确认成品真的生成了、页数和页序表一致。"""
+    # 正确页数以 order.csv 为准（删页/空白页后和原 PDF 页数不一样）
+    order_csv = Path(work_dir) / "order.csv"
+    expected = 0
+    if order_csv.exists():
+        with open(order_csv, encoding="utf-8-sig") as f:
+            expected = max(0, sum(1 for _ in f) - 1)   # 减去表头
+    if not final_pdf.exists():
+        raise FatalError(f"{标题}：成品文件没找到：{final_pdf}")
+    doc = fitz.open(final_pdf)
+    n = doc.page_count
+    doc.close()
+    if n != expected:
+        raise FatalError(f"{标题}：成品 {n} 页，页序表是 {expected} 页，页数对不上，检查……")
+    print(f"  ✔ 成品验证通过：{n} 页，和页序表一致")
+
+def pick_input():
+    if len(sys.argv) > 1:
+        p = Path(sys.argv[1])
+        if p.exists() and p.suffix.lower() == ".pdf":
+            return p
+        print(f"[致命] 拖进来的不是有效的 PDF：{p}")
+    print("把 PDF 文件拖到本窗口里，然后按回车（或直接输入 PDF 完整路径）：")
+    p = Path(input("> ").strip().strip('"'))
+    if not (p.exists() and p.suffix.lower() == ".pdf"):
+        raise FatalError(f"输入文件不存在或不是 PDF：{p}")
+    return p
+
+def main():
+    print("=" * 40)
+    print("  PDF 工具箱 · 流程执行器（带自动体检）")
+    print("=" * 40)
+    pdf = pick_input()
+    final_dir, work_dir, log_dir = ensure_output_dir(None, pdf, task_name=TASK)
+    logger = Logger(log_dir, name="流程执行")
+    logger.info(f"输入: {pdf}")
+    print(f"\n工作文件在：{work_dir}")
+
+    order_csv = work_dir / "order.csv"
+    text_csv = work_dir / "text.csv"
+
+    print("\n请选择要执行哪一步：")
+    print("  1 = 第一步：拆页（生成/不覆盖两张表）")
+    print("  2 = 第二步：按两张表重排 + 替换 + 插字，出成品")
+    print("  3 = 完整跑一遍（拆页后直接出成品）")
+    choice = input("输入 1 / 2 / 3 后回车：").strip()
+
+    if choice == "1":
+        split_pdf(pdf, work_dir, logger)
+        logger.info("第一步拆页完成")
+        report(work_dir, "拆页")          # ← 拆完自动查表
+        print(f"\n✔ 第一步完成。两张表已生成（已有表不会被覆盖）：")
+        print(f"    {text_csv}\n    {order_csv}")
+        print("  改完保存，再运行本脚本选 2。")
+
+    elif choice == "2":
+        if not order_csv.exists() or not text_csv.exists():
+            raise FatalError("两张表还没生成，先选 1 跑第一步拆页。")
+        report(work_dir, "运行前")        # ← 跑之前先查表，坏表不出成品
+        final = unique_path(final_dir / f"{pdf.stem}_完成.pdf")
+        rebuild(work_dir, final, logger)
+        logger.info("第二步重建完成")
+        verify_pdf(final, work_dir, "第二步")  # ← 跑完验证成品
+        print(f"\n✔ 第二步完成。成品在：\n  {final}")
+
+    elif choice == "3":
+        split_pdf(pdf, work_dir, logger)
+        report(work_dir, "拆页")
+        final = unique_path(final_dir / f"{pdf.stem}_完成.pdf")
+        rebuild(work_dir, final, logger)
+        verify_pdf(final, work_dir, "完整流程")
+        print(f"\n✔ 完整流程完成。成品在：\n  {final}")
+
+    else:
+        print("没这个选项，重跑再选。")
+
+    logger.info("=== 流程结束 ===")
+    input("\n按回车关闭……")
+
+if __name__ == "__main__":
+    try:
+        main()
+    except FatalError as e:
+        print(f"\n[致命] {e}")
+        print("按提示改好后再来。")
+        input("按回车关闭……")
+    except Exception as e:
+        print(f"\n[致命] 出错了：{e}")
+        print("完整报错见 日志/流程执行.log，把上面这行抄下来求助。")
+        input("按回车关闭……")
+
+============================================================
+【文件】slot_scanner.py  (13941 字节, 331 行, 编码=utf-8, 缩进=4空格, 语法✔)
+来源: D:\压缩\开发中\slot_scanner.py
+============================================================
+# -*- coding: utf-8 -*-
+"""slot_scanner.py —— 表格空位扫描器 v0.3
+
+两套扫描，各走各的入口：
+  scan_pdf       文字/矢量找表（拆页默认用，快）
+  scan_pdf_image 图片找线（纯照片扫描件专用，独立按钮触发，不自动跑）
+结果统一存 slots.json，编码格式一致（P页R行C列）。
+"""
+import json
+from pathlib import Path
+
+try:
+    import pymupdf as fitz      # 新版
+except ImportError:
+    import fitz                 # 老版兜底
+
+# ── 字号匹配（文字页专用）──────────────────────────────────
+def _页内字号分布(page):
+    """统计一页里每个字号出现了多少字，返回 [(字号, 字数), ...] 从多到少。"""
+    计数 = {}
+    d = page.get_text("dict")
+    for block in d["blocks"]:
+        for line in block.get("lines", []):
+            for span in line["spans"]:
+                txt = span["text"].strip()
+                if txt:
+                    n = 计数.get(round(span["size"], 1), 0) + len(txt)
+                    计数[round(span["size"], 1)] = n
+    return sorted(计数.items(), key=lambda x: -x[1])
+
+def _找同行字号(page, cell_rect):
+    """找空位同一水平线上、位于它左侧最近的文字的字号。
+    找不到返回 None，让调用方用本页最常用字号兜底。"""
+    d = page.get_text("dict")
+    候选 = []   # (左边距离, 字号)
+    for block in d["blocks"]:
+        for line in block.get("lines", []):
+            for span in line["spans"]:
+                txt = span["text"].strip()
+                if not txt:
+                    continue
+                r = fitz.Rect(span["bbox"])
+                if r.y0 < cell_rect.y1 and r.y1 > cell_rect.y0 \
+                        and r.x1 <= cell_rect.x0 + 2:
+                    候选.append((cell_rect.x0 - r.x1, span["size"]))
+    if 候选:
+        候选.sort()
+        return round(候选[0][1], 1)
+    return None
+
+# ── 第一段：文字/矢量找表 ─────────────────────────────────
+def scan_page(page, 页号):
+    """扫一页（文字/矢量方式），返回空位清单。没有表格返回空列表。"""
+    try:
+        tables = page.find_tables().tables
+    except Exception:
+        return []
+    常用字号 = _页内字号分布(page)
+    兜底字号 = 常用字号[0][0] if 常用字号 else 12.0
+    slots = []
+    for t in tables:
+        data = t.extract()
+        for ri, row in enumerate(t.rows, 1):
+            for ci, cell_rect in enumerate(row.cells, 1):
+                if cell_rect is None:
+                    continue
+                if ri > len(data) or ci > len(data[ri - 1]):
+                    continue
+                内容 = (data[ri - 1][ci - 1] or "").strip()
+                if 内容:
+                    continue
+                rect = fitz.Rect(cell_rect)
+                字号 = _找同行字号(page, rect) or 兜底字号
+                内缩 = fitz.Rect(rect.x0 + 2, rect.y0 + 2,
+                                 rect.x1 - 2, rect.y1 - 2)
+                slots.append({
+                    "编码": f"P{页号}R{ri}C{ci}",
+                    "页": 页号, "行": ri, "列": ci,
+                    "矩形": [round(v, 1) for v in 内缩],
+                    "字号": 字号,
+                })
+    return slots
+
+# ── 第二段：图片找线（纯照片件专用，独立入口）───────────────
+_暗阈值 = 128          # 灰度低于此算"墨"
+_最小格高px = 10       # 比这还矮的格子不认（防噪点）
+_最小格宽px = 24
+
+def _渲染灰度(page, dpi):
+    """渲染成灰度图。返回 (宽, 高, 像素bytes, 缩放系数)。"""
+    zoom = dpi / 72.0
+    pix = page.get_pixmap(matrix=fitz.Matrix(zoom, zoom),
+                          colorspace=fitz.csGRAY)
+    return pix.width, pix.height, pix.samples, zoom
+
+def _runs(mask):
+    """一维 bool 数组里的连续段，返回 [(起点, 终点), ...]。numpy 向量化。"""
+    import numpy as np
+    padded = np.concatenate(([0], mask.astype(np.int8), [0]))
+    d = np.diff(padded)
+    return list(zip(np.flatnonzero(d == 1).tolist(),
+                    np.flatnonzero(d == -1).tolist()))
+
+def _聚合成线(段, 容差=3):
+    """段=[(主坐标, 起点, 终点)]。主坐标接近的段并成一条线，
+    返回 [(主坐标均值, 最小起点, 最大终点), ...]。"""
+    if not 段:
+        return []
+    段 = sorted(段)
+    线, cur = [], [段[0]]
+    for s in 段[1:]:
+        if s[0] - cur[-1][0] <= 容差:
+            cur.append(s)
+        else:
+            线.append((round(sum(c[0] for c in cur) / len(cur), 1),
+                       min(c[1] for c in cur), max(c[2] for c in cur)))
+            cur = [s]
+    线.append((round(sum(c[0] for c in cur) / len(cur), 1),
+               min(c[1] for c in cur), max(c[2] for c in cur)))
+    return 线
+
+def scan_page_image(page, 页号, dpi=110):
+    """图片方式扫一页：找横竖框线 → 交叉成格 → 内部无墨的算空位。
+    优先 numpy（快）；没装则走慢速兜底（先 pip install numpy 更好）。"""
+    try:
+        import numpy as np
+    except ImportError:
+        return _scan_page_image_slow(page, 页号, dpi=80)
+
+    w, h, samples, zoom = _渲染灰度(page, dpi)
+    dark = (np.frombuffer(samples, dtype=np.uint8)
+            .reshape(h, w) < _暗阈值)
+    最小横 = max(30, int(w * 0.10))   # 横线至少占页宽 10%
+    最小纵 = max(30, int(h * 0.05))   # 竖线至少占页高 5%
+
+    hseg, vseg = [], []
+    for y in range(h):
+        row = dark[y]
+        if row.sum() < 最小横:
+            continue
+        for x0, x1 in _runs(row):
+            if x1 - x0 >= 最小横:
+                hseg.append((y, x0, x1))
+    for x in range(w):
+        col = dark[:, x]
+        if col.sum() < 最小纵:
+            continue
+        for y0, y1 in _runs(col):
+            if y1 - y0 >= 最小纵:
+                vseg.append((x, y0, y1))
+
+    h线 = _聚合成线(hseg)
+    v线 = _聚合成线(vseg)
+    if len(h线) < 2 or len(v线) < 2:
+        return []
+
+    # 用最长横线定表格左右界，只留横跨/纵贯表格区 60% 以上的线
+    最长 = max(h线, key=lambda L: L[2] - L[1])
+    X0, X1 = 最长[1], 最长[2]
+    Y0, Y1 = min(L[0] for L in h线), max(L[0] for L in h线)
+    h线 = [L for L in h线 if min(L[2], X1) - max(L[1], X0) >= 0.6 * (X1 - X0)]
+    v线 = [L for L in v线 if min(L[2], Y1) - max(L[1], Y0) >= 0.6 * (Y1 - Y0)]
+    if len(h线) < 2 or len(v线) < 2:
+        return []
+
+    ys = sorted(set(L[0] for L in h线))
+    xs = sorted(set(L[0] for L in v线))
+
+    slots = []
+    for ri in range(len(ys) - 1):
+        for ci in range(len(xs) - 1):
+            py0, py1, px0, px1 = ys[ri], ys[ri + 1], xs[ci], xs[ci + 1]
+            if py1 - py0 < _最小格高px or px1 - px0 < _最小格宽px:
+                continue
+            inner = dark[int(py0) + 2:int(py1) - 2, int(px0) + 2:int(px1) - 2]
+            if inner.size and inner.mean() >= 0.02:
+                continue                    # 内部有墨 = 有字，不是空位
+            字号 = max(9.0, min(14.0, round((py1 - py0) / zoom * 0.55, 1)))
+            slots.append({
+                "编码": f"P{页号}R{ri + 1}C{ci + 1}",
+                "页": 页号, "行": ri + 1, "列": ci + 1,
+                "矩形": [round(px0 / zoom, 1), round(py0 / zoom, 1),
+                         round(px1 / zoom, 1), round(py1 / zoom, 1)],
+                "字号": 字号,
+            })
+    return slots
+
+def _scan_page_image_slow(page, 页号, dpi=80):
+    """没装 numpy 的兜底：纯 Python 逐像素，慢（约 10 秒/页），结果一致。"""
+    w, h, data, zoom = _渲染灰度(page, dpi)
+    最小横 = max(30, int(w * 0.10))
+    最小纵 = max(30, int(h * 0.05))
+
+    def 横段():
+        out = []
+        for y in range(h):
+            base = y * w; x = 0
+            while x < w:
+                if data[base + x] < _暗阈值:
+                    x0 = x
+                    while x < w and data[base + x] < _暗阈值: x += 1
+                    if x - x0 >= 最小横: out.append((y, x0, x))
+                else:
+                    x += 1
+        return out
+
+    def 竖段():
+        out = []
+        for x in range(w):
+            y = 0
+            while y < h:
+                if data[y * w + x] < _暗阈值:
+                    y0 = y
+                    while y < h and data[y * w + x] < _暗阈值: y += 1
+                    if y - y0 >= 最小纵: out.append((x, y0, y))
+                else:
+                    y += 1
+        return out
+
+    def 内部墨占比(y0, y1, x0, x1):
+        总 = 暗 = 0
+        for yy in range(int(y0) + 2, int(y1) - 2):
+            base = yy * w
+            for xx in range(int(x0) + 2, int(x1) - 2):
+                总 += 1
+                if data[base + xx] < _暗阈值: 暗 += 1
+        return (暗 / 总) if 总 else 1.0
+
+    h线 = _聚合成线(横段()); v线 = _聚合成线(竖段())
+    if len(h线) < 2 or len(v线) < 2:
+        return []
+    最长 = max(h线, key=lambda L: L[2] - L[1])
+    X0, X1 = 最长[1], 最长[2]
+    Y0, Y1 = min(L[0] for L in h线), max(L[0] for L in h线)
+    h线 = [L for L in h线 if min(L[2], X1) - max(L[1], X0) >= 0.6 * (X1 - X0)]
+    v线 = [L for L in v线 if min(L[2], Y1) - max(L[1], Y0) >= 0.6 * (Y1 - Y0)]
+    if len(h线) < 2 or len(v线) < 2:
+        return []
+    ys = sorted(set(L[0] for L in h线)); xs = sorted(set(L[0] for L in v线))
+    slots = []
+    for ri in range(len(ys) - 1):
+        for ci in range(len(xs) - 1):
+            py0, py1, px0, px1 = ys[ri], ys[ri + 1], xs[ci], xs[ci + 1]
+            if py1 - py0 < _最小格高px or px1 - px0 < _最小格宽px:
+                continue
+            if 内部墨占比(py0, py1, px0, px1) >= 0.02:
+                continue
+            字号 = max(9.0, min(14.0, round((py1 - py0) / zoom * 0.55, 1)))
+            slots.append({
+                "编码": f"P{页号}R{ri + 1}C{ci + 1}",
+                "页": 页号, "行": ri + 1, "列": ci + 1,
+                "矩形": [round(px0 / zoom, 1), round(py0 / zoom, 1),
+                         round(px1 / zoom, 1), round(py1 / zoom, 1)],
+                "字号": 字号,
+            })
+    return slots
+
+def scan_pdf_image(pdf路径, json路径=None, 报告=print):
+    """【独立入口】图片找线扫整个 PDF，结果并进 slots.json。
+    界限：某页已有空位（文字版扫出来的）→ 跳过不覆盖；
+    只往没货的页里填图片扫出的空位。返回 {页号: 空位数}。"""
+    pdf路径 = Path(pdf路径)
+    json路径 = Path(json路径) if json路径 else pdf路径.with_suffix(".slots.json")
+    旧 = {}
+    if json路径.exists():
+        try:
+            旧 = json.load(open(json路径, encoding="utf-8"))
+        except Exception:
+            旧 = {}
+    doc = fitz.open(pdf路径)
+    新增 = {}
+    for pno in range(1, doc.page_count + 1):
+        if 旧.get(str(pno)):
+            报告(f"页 {pno}：已有空位（文字版扫的），跳过不覆盖")
+            continue
+        slots = scan_page_image(doc[pno - 1], pno)
+        if slots:
+            旧[str(pno)] = slots
+            新增[pno] = len(slots)
+            报告(f"页 {pno}：图片找线扫出 {len(slots)} 个空位")
+        else:
+            报告(f"页 {pno}：没找到带框线的表格（无框线排版扫不出，用点图定位置）")
+    doc.close()
+    with open(json路径, "w", encoding="utf-8") as f:
+        json.dump(旧, f, ensure_ascii=False, indent=1)
+    return 新增
+
+# ── 文字/矢量扫描整个 PDF + 存 json ───────────────────────
+def scan_pdf(pdf路径, json路径=None, 覆盖=False):
+    """扫一个 PDF 的所有页，返回 {页号: [空位...]}，并存 json。
+    覆盖=False（默认）：已有 slots.json 时不覆盖。"""
+    pdf路径 = Path(pdf路径)
+    if json路径 is None:
+        json路径 = pdf路径.with_suffix(".slots.json")
+    json路径 = Path(json路径)
+    if json路径.exists() and not 覆盖:
+        print(f"[slot_scanner] {json路径.name} 已存在，不覆盖（要重扫就传 覆盖=True）")
+        with open(json路径, "r", encoding="utf-8") as f:
+            return json.load(f)
+
+    doc = fitz.open(pdf路径)
+    全部 = {}
+    for pno in range(1, doc.page_count + 1):
+        page = doc[pno - 1]
+        slots = scan_page(page, pno)
+        if slots:
+            全部[str(pno)] = slots
+    doc.close()
+    with open(json路径, "w", encoding="utf-8") as f:
+        json.dump(全部, f, ensure_ascii=False, indent=1)
+    return 全部
+
+# ── 命令行自测 ────────────────────────────────────────────
+if __name__ == "__main__":
+    import sys
+    if len(sys.argv) < 2:
+        print("用法：python slot_scanner.py 某文件.pdf [--image]")
+        sys.exit(1)
+    if "--image" in sys.argv:
+        新增 = scan_pdf_image(sys.argv[1], 报告=print)
+        print(f"\n图片找线完成，新增空位的页：{新增}")
+    else:
+        结果 = scan_pdf(sys.argv[1], 覆盖=True)
+        总数 = 0
+        for 页, slots in 结果.items():
+            print(f"\n第 {页} 页：{len(slots)} 个空位")
+            for s in slots:
+                print(f"  {s['编码']} 字号={s['字号']} 位置={s['矩形']}")
+            总数 += 1
+        print(f"\n合计 {总数} 个空位")
+
+============================================================
+【文件】sticker.py  (8437 字节, 222 行, 编码=utf-8, 缩进=4空格, 语法✔)
+来源: D:\压缩\开发中\sticker.py
+============================================================
+# -*- coding: utf-8 -*-
+"""贴图：把 PNG/JPG 盖到指定页上，位置大小用页面比例记录。
+sticker.csv 列：页号, 图片路径, x, y, w（x/y=左上角比例，w=图宽占页宽比例）
+"""
+
+import csv
+import tempfile
+from pathlib import Path
+
+import fitz
+
+HDR = ["页号", "图片", "x", "y", "w"]
+
+
+def load_stickers(work_dir: Path):
+    p = work_dir / "sticker.csv"
+    if not p.exists():
+        return list(HDR), []
+    with open(p, encoding="utf-8-sig", newline="") as f:
+        rows = list(csv.reader(f))
+    return rows[0], [r for r in rows[1:] if r and r[0].strip()]
+
+
+def save_stickers(work_dir: Path, header, body):
+    with open(work_dir / "sticker.csv", "w", encoding="utf-8-sig",
+              newline="") as f:
+        w = csv.writer(f)
+        w.writerow(header)
+        w.writerows(body)
+
+
+def add_sticker(work_dir: Path, pno: int, img: str):
+    """新增一张贴图：默认居中、宽 30%。返回新行。"""
+    header, body = load_stickers(work_dir)
+    row = [str(pno), str(img), "0.35", "0.35", "0.3"]
+    body.append(row)
+    save_stickers(work_dir, header, body)
+    return row
+
+
+def paste_on_page(page, rows):
+    """rebuilder 调用：把某页的所有贴图盖到 PDF 页上。"""
+    pw, ph = page.rect.width, page.rect.height
+    for r in rows:
+        try:
+            img, x, y, w = r[1], float(r[2]), float(r[3]), float(r[4])
+        except (ValueError, IndexError):
+            continue
+        if not (0 <= x < 1 and 0 <= y < 1 and 0.02 <= w <= 2):
+            continue
+        try:
+            pix = fitz.Pixmap(img)
+        except RuntimeError:
+            continue  # 图片文件没了/坏了，跳过不炸
+        aspect = pix.height / pix.width
+        rect = fitz.Rect(x * pw, y * ph,
+                         x * pw + w * pw, y * ph + w * pw * aspect)
+        page.insert_image(rect, filename=img)
+
+
+# ---------- 调整窗口 ----------
+
+def open_editor(app, pno: int):
+    StickerEditor(app, pno)
+
+
+class StickerEditor:
+    """单页贴图调整：拖动=挪位置，滚轮=缩放选中项，松手即存。"""
+
+    def __init__(self, app, pno):
+        import tkinter as tk
+        from tkinter import ttk
+        self.tk, self.ttk = tk, ttk
+        self.app = app
+        self.pno = pno
+        self.work = app.work_dir
+        self.png = self.work / f"{pno:03d}.png"
+        if not self.png.exists():
+            app.log_print(f"[贴图] 找不到第{pno}页的缩略图，先拆页")
+            return
+        self.header, self.rows = load_stickers(self.work)
+        self.rows = [r for r in self.rows if r[0].lstrip("0") == str(pno)]
+
+        self.win = tk.Toplevel()
+        self.win.title(f"贴图调整 · 原第{pno}页（拖动挪位置，滚轮缩放）")
+        self.scale = 1.0
+        self.sel = None
+        self.drag = None
+        self._imgs = {}
+        self.zoom = 1.0          # 整页视图缩放
+        self.offx = self.offy = 0  # 平移偏移
+        self.pan = None          # 平移拖动中
+        self._bg_img = None       # 整页大图缓存（只解码一次）
+        self._thumb_cache = {}    # (图片路径, 宽度) -> PhotoImage
+
+        self.canvas = tk.Canvas(self.win, bg="#2b2b2b",
+                                highlightthickness=0)
+        self.canvas.pack(fill="both", expand=True)
+        self.canvas.bind("<Configure>", lambda e: self.redraw())
+        self.canvas.bind("<Button-1>", self.on_press)
+        self.canvas.bind("<B1-Motion>", self.on_motion)
+        self.canvas.bind("<ButtonRelease-1>", self.on_release)
+        self.canvas.bind("<MouseWheel>", self.on_wheel)
+        self.win.protocol("WM_DELETE_WINDOW", self.close)
+
+    # ---- 坐标换算：比例 ↔ 画布像素 ----
+    def _page_rect(self):
+        cw = max(self.canvas.winfo_width() - 20, 100)
+        ch = max(self.canvas.winfo_height() - 20, 100)
+        iw = self.tk_img.width()
+        ih = self.tk_img.height()
+        s = min(cw / iw, ch / ih, 1.0) * self.zoom
+        w, h = iw * s, ih * s
+        return 10 + self.offx, 10 + self.offy, w, h, s
+
+    def redraw(self):
+        self.canvas.delete("all")
+        if self._bg_img is None:
+            self._bg_img = self.tk.PhotoImage(file=str(self.png))
+        self.tk_img = self._bg_img            # _page_rect 要读它的宽高
+        x0, y0, w, h, s = self._page_rect()
+        self.canvas.create_image(x0, y0, anchor="nw", image=self.tk_img)
+        self._imgs.clear()
+        for i, r in enumerate(self.rows):
+            fx, fy, fw = float(r[2]), float(r[3]), float(r[4])
+            ix, iy = x0 + fx * w, y0 + fy * h
+            iw = fw * w
+            key = (r[1], int(iw))
+            img = self._thumb_cache.get(key)
+            if img is None:
+                img = self._thumb(r[1], int(iw))
+                if img is not None:
+                    self._thumb_cache[key] = img
+            if img is None:
+                self.canvas.create_rectangle(ix, iy, ix + iw, iy + 40,
+                                             outline="red")
+                continue
+            self.canvas.create_image(ix, iy, anchor="nw", image=img)
+            self._imgs[i] = img
+            if i == self.sel:
+                self.canvas.create_rectangle(ix - 2, iy - 2,
+                                             ix + iw + 2, iy + img.height() + 2,
+                                             outline="#e33", width=2)
+        self._geo = (x0, y0, w, h)
+
+    def _thumb(self, path, width):
+        """把任意图片转成 PNG 临时文件再上画布（PhotoImage 不认 JPG）。"""
+        try:
+            pix = fitz.Pixmap(path)
+            if pix.alpha:
+                pix = fitz.Pixmap(fitz.csRGB, pix)
+            if width < 4:
+                width = 4
+            f = max(width / pix.width, 0.01)
+            pix = fitz.Pixmap(pix, int(pix.width * f), int(pix.height * f))
+            tmp = Path(tempfile.gettempdir()) / "stk_tmp.png"
+            pix.save(tmp)
+            return self.tk.PhotoImage(file=str(tmp))
+        except RuntimeError:
+            return None
+
+    def _hit(self, mx, my):
+        x0, y0, w, h = self._geo
+        for i, r in enumerate(self.rows):
+            fx, fy, fw = float(r[2]), float(r[3]), float(r[4])
+            ix, iy = x0 + fx * w, y0 + fy * h
+            img = self._imgs.get(i)
+            ih = img.height() if img else 40
+            if ix <= mx <= ix + fw * w and iy <= my <= iy + ih:
+                return i
+        return None
+
+    def on_press(self, e):
+        self.sel = self._hit(e.x, e.y)
+        self.pan = None if self.sel is not None else (e.x, e.y)
+        self.drag = (e.x, e.y)
+        self.redraw()
+
+    def on_motion(self, e):
+        if self.pan is not None:                 # 空白处拖动 = 平移整页
+            self.offx += e.x - self.pan[0]
+            self.offy += e.y - self.pan[1]
+            self.pan = (e.x, e.y)
+            self.redraw()
+            return
+        if self.sel is None or self.drag is None:
+            return
+        x0, y0, w, h = self._geo
+        dx = (e.x - self.drag[0]) / w
+        dy = (e.y - self.drag[1]) / h
+        r = self.rows[self.sel]
+        r[2] = f"{min(max(float(r[2]) + dx, 0), 0.98):.4f}"
+        r[3] = f"{min(max(float(r[3]) + dy, 0), 0.98):.4f}"
+        self.drag = (e.x, e.y)
+        self.redraw()
+
+    def on_release(self, e):
+        self.pan = None
+        self.drag = None
+        self.save()
+
+    def on_wheel(self, e):
+        if self.sel is None or (e.state & 0x0004):   # 没选中 或 Ctrl按住 = 缩放视图
+            step = 1.1 if e.delta > 0 else 1 / 1.1
+            self.zoom = min(max(self.zoom * step, 0.3), 5.0)
+            self.redraw()
+            return
+        step = 0.03 if e.delta > 0 else -0.03        # 选中贴图 = 缩放贴图本身
+        r = self.rows[self.sel]
+        r[4] = f"{min(max(float(r[4]) + step, 0.05), 1.5):.4f}"
+        self.redraw()
+        self.save()
+
+    def save(self):
+        all_header, all_rows = load_stickers(self.work)
+        keep = [r for r in all_rows if r[0].lstrip("0") != str(self.pno)]
+        save_stickers(self.work, all_header, keep + self.rows)
+
+    def close(self):
+        self.save()
+        self.win.destroy()
+
+============================================================
+【文件】打包发我.py  (7732 字节, 180 行, 编码=utf-8, 缩进=4空格, 语法✔)
+来源: D:\压缩\开发中\打包发我.py
+============================================================
+# -*- coding: utf-8 -*-
+"""把项目里的代码/文档文件合并成一个 txt，方便整包发给别人看。
+用法：双击运行，或 python 打包发我.py
+生成：_打包.txt（在项目根目录）
+
+v0.2：缩进/行尾规范化 + 缩进模式标注 + 混合缩进报警。
+v0.3：.py 逐个 compile() 语法体检；顶部加阅读须知；
+      .py 非 UTF-8 拒收。
+v0.4：修正 v0.3 的过度承诺（阅读须知收窄、行号承诺删除、
+      tab 只展开行首、detect_indent 识别行内混用）。
+v0.5：compile() 除 SyntaxError 外，补捕获 ValueError
+      （含 \\x00 的 .py 会抛它而非 SyntaxError，原先会让打包器自己崩），
+      再加一层 Exception 兜底，保证单文件异常不带走整个打包。
+v0.6：保留"不规则空格⚠"（不因误报就取消检测），
+      改 PREAMBLE 明确它是"告警"而非"结论"，
+      并把续行对齐列为最常见来源（附"结合语法✔ 判断"的方法）；
+      detect_indent 改为只统计块缩进（前一行以 : 结尾），
+      续行对齐不再拉低 gcd，误报大幅减少。
+"""
+from pathlib import Path
+from math import gcd
+from functools import reduce
+
+INCLUDE = {".py", ".txt", ".csv", ".json", ".md"}
+SKIP_DIRS = {"__pycache__", ".vscode", ".git", "venv", ".venv",
+             "输出", "output", "build", "dist"}
+MAX_KB = 200
+TAB_WIDTH = 4
+
+root = Path(__file__).resolve().parent
+out_path = root / "_打包.txt"
+
+PREAMBLE = (
+    "━━━━ 阅读须知（发给 AI 分析时整段带上）━━━━\n"
+    "1. 本打包内的 .py：行首 tab 已展开为 4 空格，行尾已统一为 \\n；\n"
+    "   原生使用空格缩进的文件保持原样。每份文件的'缩进='标注\n"
+    "   记录的是规范化之前的原始形态（tab / 4空格 / 混合⚠ 等）。\n"
+    "2. 每份 .py 都通过了 compile() 检查，文件头标 '语法✔'。\n"
+    "   这只证明不存在 IndentationError 级别的破碎，\n"
+    "   不证明'某段缩进在语义上贴对了位置'——\n"
+    "   语法合法但缩进贴错的代码（例如本该在循环体内的 if\n"
+    "   被贴到了循环体外）compile() 照样通过。\n"
+    "   凡涉及缩进语义的判断（'这段在不在某块肚子里'），\n"
+    "   必须先向使用者确认原始 .py，不得仅凭本打包下结论。\n"
+    "3. '缩进=不规则空格⚠' 是告警不是结论，常见来源是续行对齐：\n"
+    "   函数调用/列表/字典跨行时，续行对齐到括号内某个位置，\n"
+    "   宽度天然不是 4 的倍数（如 9、12、17），合法且常见；\n"
+    "   也可能是真的缩进错乱。看这个 ⚠ 时结合第 2 条：\n"
+    "   若同时标 '语法✔'，多半是续行对齐，不必惊慌；\n"
+    "   真正错乱的缩进会导致 IndentationError，已被 compile()\n"
+    "   拦下并标 '⚠语法错'。要确认真假，须看原始 .py。\n"
+    "4. 若某 .py 的文件头标 '⚠文件有非法字符' 或 '⚠语法错'，\n"
+    "   该文件本身可能已被破坏，请勿基于它下任何结论。\n"
+    "5. 设计语义（某功能'该不该这样'）拿不准时，\n"
+    "   先问使用者该功能是否存在、是否有意为之，勿直接判为 bug。\n"
+    "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+)
+
+
+def detect_indent(text):
+    """识别缩进模式。'不规则'只在块缩进里判，
+    续行对齐（括号内跨行）不计入，避免误报。"""
+    lines = text.split("\n")
+    has_tab = has_space = False
+    block_widths = []
+    prev = ""
+    for l in lines:
+        if not l.strip() or l.lstrip().startswith("#"):
+            continue
+        i = 0
+        while i < len(l) and l[i] in (" ", "\t"):
+            i += 1
+        head = l[:i]
+        if "\t" in head and " " in head:
+            return "混合(同行tab+空格)⚠"
+        if "\t" in head:
+            has_tab = True
+        elif i > 0:
+            has_space = True
+            # 只统计"块缩进"：上一行以 : 结尾（且不在括号里）
+            if prev.rstrip().endswith(":") and i not in block_widths:
+                block_widths.append(i)
+        prev = l
+    if has_tab and has_space:
+        return "混合(tab行+空格行)⚠"
+    if has_tab:
+        return "tab"
+    if has_space:
+        if not block_widths:
+            return "空格"
+        unit = reduce(gcd, block_widths)
+        if unit == 1:
+            return "不规则空格⚠"
+        return f"{unit}空格"
+    return "无缩进"
+
+
+def _expand_lead_tabs(line, w):
+    """只展开行首连续的 tab；字符串字面量里的 tab 不动。"""
+    i = 0
+    while i < len(line) and line[i] == "\t":
+        i += 1
+    return " " * (i * w) + line[i:]
+
+
+def normalize(text):
+    """行尾统一 \\n；行首 tab 展开；去行尾空白（保留行首缩进）。"""
+    text = text.replace("\r\n", "\n").replace("\r", "\n")
+    lines = [_expand_lead_tabs(l, TAB_WIDTH).rstrip()
+             for l in text.split("\n")]
+    return "\n".join(lines)
+
+
+parts, total, syn_bad = [], 0, 0
+for f in sorted(root.rglob("*")):
+    if not f.is_file():
+        continue
+    if any(part in SKIP_DIRS for part in f.relative_to(root).parts[:-1]):
+        continue
+    if f.suffix.lower() not in INCLUDE:
+        continue
+    if f == out_path:
+        continue
+
+    try:
+        text = f.read_text(encoding="utf-8")
+        enc = "utf-8"
+    except UnicodeDecodeError:
+        if f.suffix.lower() == ".py":
+            print(f"拒收（.py 不是 UTF-8，防编码暗雷）：{f.relative_to(root)}")
+            continue
+        text = f.read_text(encoding="gbk", errors="replace")
+        enc = "gbk(有损)"
+    except Exception as e:
+        print(f"跳过（读不了）：{f.relative_to(root)}  {e}")
+        continue
+
+    if len(text.encode("utf-8")) > MAX_KB * 1024:
+        print(f"跳过（太大）：{f.relative_to(root)}")
+        continue
+
+    indent = detect_indent(text)
+    text = normalize(text)
+
+    syn = ""
+    if f.suffix.lower() == ".py":
+        try:
+            compile(text, str(f), "exec")
+            syn = ", 语法✔"
+        except SyntaxError as e:
+            syn = f", ⚠语法错：第{e.lineno}行 {e.msg}"
+            syn_bad += 1
+        except ValueError:
+            # 典型：含 \x00（二进制污染 / 拷贝截断）
+            syn = ", ⚠文件有非法字符（疑似二进制污染），拒发"
+            syn_bad += 1
+        except Exception as e:
+            # 兜底：不让任何单文件异常把整个打包带走
+            syn = f", ⚠compile 未知异常：{type(e).__name__}: {e}"
+            syn_bad += 1
+
+    n_lines = text.count("\n") + 1
+    rel = f.relative_to(root)
+    size = f.stat().st_size
+    head = (f"\n{'='*60}\n"
+            f"【文件】{rel}  ({size} 字节, {n_lines} 行, "
+            f"编码={enc}, 缩进={indent}{syn})\n"
+            f"来源: {f.resolve()}\n"
+            f"{'='*60}\n")
+    parts.append(head + text)
+    total += 1
+    print(f"已收录：{rel}")
+
+out_path.write_text(PREAMBLE + "".join(parts), encoding="utf-8")
+print(f"\n✔ 完成：共收录 {total} 个文件 → {out_path}")
+if syn_bad:
+    print(f"⚠ 其中 {syn_bad} 个 .py 有问题（语法错或非法字符），"
+          f"先修好再发给 AI 分析，否则对方会对着坏代码白诊断。")
+print("提示：语法✔ 仅表示缩进没有破成语法错；"
+      "'这段缩进是不是作者想要的'仍须人工确认。")
+============================================================
+【文件】新建 文本文档.txt  (0 字节, 1 行, 编码=utf-8, 缩进=无缩进)
+来源: D:\压缩\开发中\新建 文本文档.txt
+============================================================
+
+============================================================
+【文件】测试文件.slots.json  (11251 字节, 883 行, 编码=utf-8, 缩进=空格)
+来源: D:\压缩\开发中\测试文件.slots.json
+============================================================
+{
+ "1": [
+  {
+   "编码": "P1R2C2",
+   "页": 1,
+   "行": 2,
+   "列": 2,
+   "矩形": [
+    198.7,
+    255.3,
+    516.0,
+    283.0
+   ],
+   "字号": 14.1
+  },
+  {
+   "编码": "P1R3C2",
+   "页": 1,
+   "行": 3,
+   "列": 2,
+   "矩形": [
+    198.7,
+    287.0,
+    516.0,
+    314.3
+   ],
+   "字号": 14.1
+  },
+  {
+   "编码": "P1R4C2",
+   "页": 1,
+   "行": 4,
+   "列": 2,
+   "矩形": [
+    198.7,
+    318.3,
+    516.0,
+    345.6
+   ],
+   "字号": 14.1
+  },
+  {
+   "编码": "P1R5C2",
+   "页": 1,
+   "行": 5,
+   "列": 2,
+   "矩形": [
+    198.7,
+    349.6,
+    516.0,
+    398.0
+   ],
+   "字号": 14.1
+  },
+  {
+   "编码": "P1R6C2",
+   "页": 1,
+   "行": 6,
+   "列": 2,
+   "矩形": [
+    198.7,
+    402.0,
+    516.0,
+    429.4
+   ],
+   "字号": 14.1
+  },
+  {
+   "编码": "P1R7C2",
+   "页": 1,
+   "行": 7,
+   "列": 2,
+   "矩形": [
+    198.7,
+    433.4,
+    516.0,
+    460.7
+   ],
+   "字号": 14.1
+  }
+ ],
+ "4": [
+  {
+   "编码": "P4R2C3",
+   "页": 4,
+   "行": 2,
+   "列": 3,
+   "矩形": [
+    198.7,
+    349.3,
+    406.0,
+    377.0
+   ],
+   "字号": 14.1
+  },
+  {
+   "编码": "P4R3C3",
+   "页": 4,
+   "行": 3,
+   "列": 3,
+   "矩形": [
+    198.7,
+    381.0,
+    406.0,
+    408.4
+   ],
+   "字号": 14.1
+  },
+  {
+   "编码": "P4R3C4",
+   "页": 4,
+   "行": 3,
+   "列": 4,
+   "矩形": [
+    410.0,
+    381.0,
+    516.0,
+    408.4
+   ],
+   "字号": 14.1
+  },
+  {
+   "编码": "P4R4C3",
+   "页": 4,
+   "行": 4,
+   "列": 3,
+   "矩形": [
+    198.7,
+    412.4,
+    406.0,
+    439.7
+   ],
+   "字号": 14.1
+  },
+  {
+   "编码": "P4R4C4",
+   "页": 4,
+   "行": 4,
+   "列": 4,
+   "矩形": [
+    410.0,
+    412.4,
+    516.0,
+    439.7
+   ],
+   "字号": 14.1
+  },
+  {
+   "编码": "P4R5C3",
+   "页": 4,
+   "行": 5,
+   "列": 3,
+   "矩形": [
+    198.7,
+    443.7,
+    406.0,
+    471.0
+   ],
+   "字号": 14.1
+  },
+  {
+   "编码": "P4R5C4",
+   "页": 4,
+   "行": 5,
+   "列": 4,
+   "矩形": [
+    410.0,
+    443.7,
+    516.0,
+    471.0
+   ],
+   "字号": 14.1
+  },
+  {
+   "编码": "P4R6C3",
+   "页": 4,
+   "行": 6,
+   "列": 3,
+   "矩形": [
+    198.7,
+    475.0,
+    406.0,
+    502.5
+   ],
+   "字号": 14.1
+  },
+  {
+   "编码": "P4R7C3",
+   "页": 4,
+   "行": 7,
+   "列": 3,
+   "矩形": [
+    198.7,
+    506.5,
+    406.0,
+    533.9
+   ],
+   "字号": 14.1
+  },
+  {
+   "编码": "P4R7C4",
+   "页": 4,
+   "行": 7,
+   "列": 4,
+   "矩形": [
+    410.0,
+    506.5,
+    516.0,
+    533.9
+   ],
+   "字号": 14.1
+  },
+  {
+   "编码": "P4R8C3",
+   "页": 4,
+   "行": 8,
+   "列": 3,
+   "矩形": [
+    198.7,
+    537.9,
+    406.0,
+    586.1
+   ],
+   "字号": 14.1
+  },
+  {
+   "编码": "P4R8C4",
+   "页": 4,
+   "行": 8,
+   "列": 4,
+   "矩形": [
+    410.0,
+    537.9,
+    516.0,
+    586.1
+   ],
+   "字号": 14.1
+  }
+ ],
+ "7": [
+  {
+   "编码": "P7R2C2",
+   "页": 7,
+   "行": 2,
+   "列": 2,
+   "矩形": [
+    248.7,
+    126.3,
+    516.0,
+    154.0
+   ],
+   "字号": 14.1
+  },
+  {
+   "编码": "P7R3C2",
+   "页": 7,
+   "行": 3,
+   "列": 2,
+   "矩形": [
+    248.7,
+    158.0,
+    516.0,
+    185.3
+   ],
+   "字号": 14.1
+  },
+  {
+   "编码": "P7R4C2",
+   "页": 7,
+   "行": 4,
+   "列": 2,
+   "矩形": [
+    248.7,
+    189.3,
+    516.0,
+    216.6
+   ],
+   "字号": 14.1
+  },
+  {
+   "编码": "P7R5C2",
+   "页": 7,
+   "行": 5,
+   "列": 2,
+   "矩形": [
+    248.7,
+    220.6,
+    516.0,
+    248.1
+   ],
+   "字号": 14.1
+  },
+  {
+   "编码": "P7R6C2",
+   "页": 7,
+   "行": 6,
+   "列": 2,
+   "矩形": [
+    248.7,
+    252.1,
+    516.0,
+    279.4
+   ],
+   "字号": 14.1
+  },
+  {
+   "编码": "P7R7C2",
+   "页": 7,
+   "行": 7,
+   "列": 2,
+   "矩形": [
+    248.7,
+    283.4,
+    516.0,
+    310.8
+   ],
+   "字号": 14.1
+  },
+  {
+   "编码": "P7R8C2",
+   "页": 7,
+   "行": 8,
+   "列": 2,
+   "矩形": [
+    248.7,
+    314.8,
+    516.0,
+    363.0
+   ],
+   "字号": 14.1
+  },
+  {
+   "编码": "P7R9C2",
+   "页": 7,
+   "行": 9,
+   "列": 2,
+   "矩形": [
+    248.7,
+    367.0,
+    516.0,
+    415.4
+   ],
+   "字号": 14.1
+  },
+  {
+   "编码": "P7R10C2",
+   "页": 7,
+   "行": 10,
+   "列": 2,
+   "矩形": [
+    248.7,
+    419.4,
+    516.0,
+    446.8
+   ],
+   "字号": 14.1
+  },
+  {
+   "编码": "P7R11C2",
+   "页": 7,
+   "行": 11,
+   "列": 2,
+   "矩形": [
+    248.7,
+    450.8,
+    516.0,
+    478.1
+   ],
+   "字号": 14.1
+  },
+  {
+   "编码": "P7R12C2",
+   "页": 7,
+   "行": 12,
+   "列": 2,
+   "矩形": [
+    248.7,
+    482.1,
+    516.0,
+    509.4
+   ],
+   "字号": 14.1
+  },
+  {
+   "编码": "P7R13C2",
+   "页": 7,
+   "行": 13,
+   "列": 2,
+   "矩形": [
+    248.7,
+    513.4,
+    516.0,
+    540.9
+   ],
+   "字号": 14.1
+  },
+  {
+   "编码": "P7R14C2",
+   "页": 7,
+   "行": 14,
+   "列": 2,
+   "矩形": [
+    248.7,
+    544.9,
+    516.0,
+    572.2
+   ],
+   "字号": 14.1
+  },
+  {
+   "编码": "P7R15C2",
+   "页": 7,
+   "行": 15,
+   "列": 2,
+   "矩形": [
+    248.7,
+    576.2,
+    516.0,
+    603.6
+   ],
+   "字号": 14.1
+  }
+ ],
+ "9": [
+  {
+   "编码": "P9R2C2",
+   "页": 9,
+   "行": 2,
+   "列": 2,
+   "矩形": [
+    103.6,
+    171.0,
+    269.7,
+    198.6
+   ],
+   "字号": 14.1
+  },
+  {
+   "编码": "P9R2C3",
+   "页": 9,
+   "行": 2,
+   "列": 3,
+   "矩形": [
+    273.7,
+    171.0,
+    439.7,
+    198.6
+   ],
+   "字号": 14.1
+  },
+  {
+   "编码": "P9R2C4",
+   "页": 9,
+   "行": 2,
+   "列": 4,
+   "矩形": [
+    443.7,
+    171.0,
+    515.9,
+    198.6
+   ],
+   "字号": 14.1
+  },
+  {
+   "编码": "P9R3C2",
+   "页": 9,
+   "行": 3,
+   "列": 2,
+   "矩形": [
+    103.6,
+    202.6,
+    269.7,
+    230.1
+   ],
+   "字号": 14.1
+  },
+  {
+   "编码": "P9R3C3",
+   "页": 9,
+   "行": 3,
+   "列": 3,
+   "矩形": [
+    273.7,
+    202.6,
+    439.7,
+    230.1
+   ],
+   "字号": 14.1
+  },
+  {
+   "编码": "P9R3C4",
+   "页": 9,
+   "行": 3,
+   "列": 4,
+   "矩形": [
+    443.7,
+    202.6,
+    515.9,
+    230.1
+   ],
+   "字号": 14.1
+  },
+  {
+   "编码": "P9R4C2",
+   "页": 9,
+   "行": 4,
+   "列": 2,
+   "矩形": [
+    103.6,
+    234.1,
+    269.7,
+    261.5
+   ],
+   "字号": 14.1
+  },
+  {
+   "编码": "P9R4C3",
+   "页": 9,
+   "行": 4,
+   "列": 3,
+   "矩形": [
+    273.7,
+    234.1,
+    439.7,
+    261.5
+   ],
+   "字号": 14.1
+  },
+  {
+   "编码": "P9R4C4",
+   "页": 9,
+   "行": 4,
+   "列": 4,
+   "矩形": [
+    443.7,
+    234.1,
+    515.9,
+    261.5
+   ],
+   "字号": 14.1
+  },
+  {
+   "编码": "P9R5C2",
+   "页": 9,
+   "行": 5,
+   "列": 2,
+   "矩形": [
+    103.6,
+    265.5,
+    269.7,
+    292.8
+   ],
+   "字号": 14.1
+  },
+  {
+   "编码": "P9R5C3",
+   "页": 9,
+   "行": 5,
+   "列": 3,
+   "矩形": [
+    273.7,
+    265.5,
+    439.7,
+    292.8
+   ],
+   "字号": 14.1
+  },
+  {
+   "编码": "P9R5C4",
+   "页": 9,
+   "行": 5,
+   "列": 4,
+   "矩形": [
+    443.7,
+    265.5,
+    515.9,
+    292.8
+   ],
+   "字号": 14.1
+  },
+  {
+   "编码": "P9R6C2",
+   "页": 9,
+   "行": 6,
+   "列": 2,
+   "矩形": [
+    103.6,
+    296.8,
+    269.7,
+    324.3
+   ],
+   "字号": 14.1
+  },
+  {
+   "编码": "P9R6C3",
+   "页": 9,
+   "行": 6,
+   "列": 3,
+   "矩形": [
+    273.7,
+    296.8,
+    439.7,
+    324.3
+   ],
+   "字号": 14.1
+  },
+  {
+   "编码": "P9R6C4",
+   "页": 9,
+   "行": 6,
+   "列": 4,
+   "矩形": [
+    443.7,
+    296.8,
+    515.9,
+    324.3
+   ],
+   "字号": 14.1
+  }
+ ],
+ "10": [
+  {
+   "编码": "P10R2C2",
+   "页": 10,
+   "行": 2,
+   "列": 2,
+   "矩形": [
+    228.7,
+    171.0,
+    369.6,
+    198.6
+   ],
+   "字号": 14.1
+  },
+  {
+   "编码": "P10R2C3",
+   "页": 10,
+   "行": 2,
+   "列": 3,
+   "矩形": [
+    373.6,
+    171.0,
+    516.0,
+    198.6
+   ],
+   "字号": 14.1
+  },
+  {
+   "编码": "P10R3C2",
+   "页": 10,
+   "行": 3,
+   "列": 2,
+   "矩形": [
+    228.7,
+    202.6,
+    369.6,
+    230.1
+   ],
+   "字号": 14.1
+  },
+  {
+   "编码": "P10R3C3",
+   "页": 10,
+   "行": 3,
+   "列": 3,
+   "矩形": [
+    373.6,
+    202.6,
+    516.0,
+    230.1
+   ],
+   "字号": 14.1
+  },
+  {
+   "编码": "P10R4C2",
+   "页": 10,
+   "行": 4,
+   "列": 2,
+   "矩形": [
+    228.7,
+    234.1,
+    369.6,
+    261.5
+   ],
+   "字号": 14.1
+  },
+  {
+   "编码": "P10R4C3",
+   "页": 10,
+   "行": 4,
+   "列": 3,
+   "矩形": [
+    373.6,
+    234.1,
+    516.0,
+    261.5
+   ],
+   "字号": 14.1
+  },
+  {
+   "编码": "P10R5C2",
+   "页": 10,
+   "行": 5,
+   "列": 2,
+   "矩形": [
+    228.7,
+    265.5,
+    369.6,
+    292.8
+   ],
+   "字号": 14.1
+  },
+  {
+   "编码": "P10R5C3",
+   "页": 10,
+   "行": 5,
+   "列": 3,
+   "矩形": [
+    373.6,
+    265.5,
+    516.0,
+    292.8
+   ],
+   "字号": 14.1
+  },
+  {
+   "编码": "P10R6C2",
+   "页": 10,
+   "行": 6,
+   "列": 2,
+   "矩形": [
+    228.7,
+    296.8,
+    369.6,
+    324.3
+   ],
+   "字号": 14.1
+  },
+  {
+   "编码": "P10R6C3",
+   "页": 10,
+   "行": 6,
+   "列": 3,
+   "矩形": [
+    373.6,
+    296.8,
+    516.0,
+    324.3
+   ],
+   "字号": 14.1
+  },
+  {
+   "编码": "P10R7C2",
+   "页": 10,
+   "行": 7,
+   "列": 2,
+   "矩形": [
+    228.7,
+    328.3,
+    369.6,
+    355.6
+   ],
+   "字号": 14.1
+  },
+  {
+   "编码": "P10R7C3",
+   "页": 10,
+   "行": 7,
+   "列": 3,
+   "矩形": [
+    373.6,
+    328.3,
+    516.0,
+    355.6
+   ],
+   "字号": 14.1
+  },
+  {
+   "编码": "P10R8C2",
+   "页": 10,
+   "行": 8,
+   "列": 2,
+   "矩形": [
+    228.7,
+    359.6,
+    369.6,
+    387.0
+   ],
+   "字号": 14.1
+  },
+  {
+   "编码": "P10R8C3",
+   "页": 10,
+   "行": 8,
+   "列": 3,
+   "矩形": [
+    373.6,
+    359.6,
+    516.0,
+    387.0
+   ],
+   "字号": 14.1
+  },
+  {
+   "编码": "P10R9C2",
+   "页": 10,
+   "行": 9,
+   "列": 2,
+   "矩形": [
+    228.7,
+    391.0,
+    369.6,
+    418.4
+   ],
+   "字号": 14.1
+  },
+  {
+   "编码": "P10R9C3",
+   "页": 10,
+   "行": 9,
+   "列": 3,
+   "矩形": [
+    373.6,
+    391.0,
+    516.0,
+    418.4
+   ],
+   "字号": 14.1
+  },
+  {
+   "编码": "P10R10C2",
+   "页": 10,
+   "行": 10,
+   "列": 2,
+   "矩形": [
+    228.7,
+    422.4,
+    369.6,
+    449.8
+   ],
+   "字号": 14.1
+  },
+  {
+   "编码": "P10R10C3",
+   "页": 10,
+   "行": 10,
+   "列": 3,
+   "矩形": [
+    373.6,
+    422.4,
+    516.0,
+    449.8
+   ],
+   "字号": 14.1
+  },
+  {
+   "编码": "P10R11C2",
+   "页": 10,
+   "行": 11,
+   "列": 2,
+   "矩形": [
+    228.7,
+    453.8,
+    369.6,
+    481.1
+   ],
+   "字号": 14.1
+  },
+  {
+   "编码": "P10R11C3",
+   "页": 10,
+   "行": 11,
+   "列": 3,
+   "矩形": [
+    373.6,
+    453.8,
+    516.0,
+    481.1
+   ],
+   "字号": 14.1
+  }
+ ]
+}
+============================================================
+【文件】目录结构.txt  (275 字节, 20 行, 编码=gbk(有损), 缩进=空格)
+来源: D:\压缩\开发中\目录结构.txt
+============================================================
+pdf_tool/
+  main.py
+  cli.py
+  gui.py
+  config.json
+  requirements.txt
+  启动.bat
+  core/
+    __init__.py
+    common.py
+    splitter.py
+    rebuilder.py
+    inserter.py
+  modes/
+    __init__.py
+    mode_rebuild.py
+  docs/
+    约定总纲.txt
+    待办与坑.txt

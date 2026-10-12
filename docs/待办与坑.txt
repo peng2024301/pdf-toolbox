@@ -1,0 +1,95 @@
+【待办与坑】（2026-09-19 重建版，旧文件因编码损坏重写）
+
+== 坑：PyInstaller 打包 ==
+- build.bat 若用命令行参数打包，每次会重新生成 spec，
+  手改 spec 无效；要改 spec 就让 build.bat 直接用 spec 打包
+- 打包入口文件（launcher.py）必须单独测试：
+  python launcher.py 能弹出界面，才能打包
+  （gui.py 能跑 ≠ launcher 能跑）
+- gui.run_gui() 必须写在 try/except 外面，
+  放进 except 里会导致 import 成功就静默退出、无界面无报错
+- build.bat 要检查 errorlevel，否则打包失败也喊"打包完成"
+- 调试期 spec 里 console=True，能看报错；正式发布改回 False
+- launcher 已带崩溃日志兜底：exe 启动失败看旁边的 崩溃日志.txt
+
+== 坑：编码 ==
+- cmd 用 echo/重定向写中文 txt，默认 GBK 且无标签，
+  UTF-8 默认的编辑器打开就乱码；写中文文件先 chcp 65001
+  或直接在 VS Code 里写
+- 文件被错误编码打开后"保存"，内容会被替换符永久破坏，
+  不可恢复（本文件旧版就是这么没的）
+- bat 里有 chcp 65001 → 必须存 UTF-8；没有 → 必须存 ANSI
+
+== 待办 ==
+- [ ] 补回旧清单里还记得的条目（OCR 转写：PDF 转 Word，
+      原理是 PDF 内嵌图片…这条就是从残余碎片里认出的）
+- [ ] 正式包验证：spec console=False 重新打包，双击 exe 无黑窗
+1. 入口文件要单独测——源码能跑 ≠ 打包能跑
+2. 构建脚本必须会报错——失败的"成功"比失败更误事
+3. 编码要一次定对——错误保存会永久烧内容
+== 坑：改 gui.py ==
+- App 类的方法都是 4 格缩进、平级排列；
+  往中间插新方法前先看清上一个方法的 def 到哪结束，
+  插进别的方法肚子会把它的内嵌函数（如 do_split 的 worker）连根拔断
+
+== 坑：NameError 类报错先查 import ==
+- Pylance 报 "xxx is not defined"，九成不是那一行写错，
+  而是文件顶部没 import 对应模块
+- 修法：跳到文件最顶上补 import，别在报错行瞎改
+== 边界：并入 ==
+  - 新页号接在最大号后，删页留下的号洞不会被复用
+  - 对方 PDF 若是纯图片扫描件，扫不出空位 → 玩法二点图定坐标
+  - slots.json 合并按"字典+页号字符串键"处理，结构变了要同步 merger.py
+== 坑：线程里的变量 ==
+- 后台线程用的变量，最好在 def worker(参数) 里声明、
+  Thread(args=(...),) 传进去，别靠闭包"顺便看见"——
+  赋值代码挪个位置就是 NameError
+- 贴代码先扫占位符（×××、xxx、f5r 这类），原样粘进去必报错
+== 结案：slots.json 为空之谜 ==
+- 现象：新拆页 slots.json 只有 2 字节（{}），口令报"[没空位]"
+- 根因：测试 PDF"图片笔记(2).pdf"是纯图片扫描件，没有文字层，
+        表格空位扫描器扫不出格子——预期行为，非 bug
+- 旧的有货 slots.json 属于另一份 PDF（桌面副本项目拆的）
+- 规约：格子口令（R2C2=）只对文字版 PDF 可用；
+        纯图片件用"点图定位置"填字
+- 教训：报"文件没数据"先三问——找对文件了吗？同一份 PDF 吗？
+        这份 PDF 有文字层吗？（鼠标能选中文字=有）
+
+== 教训：双项目副本 ==
+- D:\桌面\开发中 和 D:\压缩\开发中 是两份项目副本，
+  测试结果来回打架。建议：留 D:\压缩\开发中 为主力，
+  桌面那份改名"旧版备份_勿动"或删除
+== 新需求：图片版 PDF 的格子支持 ==
+- 现状：格子口令只对文字版 PDF 可用，图片件报"[没空位]"
+- 方案：扫描器加"图片找线"段（A）+ 预览窗手动画格子（B）
+- 状态：等 slot_scanner.py 和表格样式确认后动工
+== 坑：VS Code 解释器与实际运行环境不一致 ==
+- 现象：Pylance 全线报 Import could not be resolved（黄警告），
+  但命令行运行一切正常
+- 根因：命令行用 Python314（库都装在这），VS Code 选的是别的解释器
+- 规约：报 import 警告先对账——命令行 python -c "import sys;
+  print(sys.executable)" 的路径 vs VS Code 右下角解释器，不一致先切换
+- 提醒：黄色警告≠红色错误，程序能不能跑以命令行实际运行为准
+
+== gui.py 验收进度 ==
+- 已过：do_sticker 死代码删除、_page_size 方法、扫图片格子按钮、
+        do_split 覆盖=True、腰斩版 _apply_slot_payload 删除
+- 欠一项：_apply_text_payload 里"没坐标自动落左下角"的调用块
+  （_page_size 已就位但未被调用，等于装了门没装锁）
+- 补上后跑 ①~⑥ 验收，重点 ① --image 输出 和 ③ 日志
+== 坑：tk vs ttk 前缀敲错 ==
+- ttk 没有 Toplevel；窗口类（Toplevel/Canvas/Listbox/Text）都在 tk 里
+- page_drag.py line33 ttk.Toplevel → tk.Toplevel，已修
+- 连带发现：上一轮 parent=self 的修复没实际落盘（报错行号原样），
+  规约：给过的修复代码要当场改完保存再测，"发过"≠"改过"
+
+== 坑：子窗口 import 原生 ttk 却用了 bootstyle ==
+- page_drag.py from tkinter import ttk + bootstyle → TclError，
+  __init__ 半途崩 = 灰窗（窗口在、控件没建全）
+- 规约：凡控件用 bootstyle 的文件，一律 import ttkbootstrap as ttk
+- 灰窗诊断口诀：Toplevel 出来了但全灰 → 八成 __init__ 中途崩，
+  看控制台最后一行 TclError 落在哪个控件上
+== 贴图调整窗补全 ==
+- StickerEditor 加 self._imgs={}（欠账清）、视图缩放（滚轮/Ctrl滚轮）、
+  平移（空白处拖动）；贴图本身的拖动/缩放逻辑不变
+
